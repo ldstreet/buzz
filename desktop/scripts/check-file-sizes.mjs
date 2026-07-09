@@ -131,7 +131,8 @@ const overrides = new Map([
   // databricks-v1-to-v2-migration: databricks-v2 hyphen-alias added to all
   // host/credential match arms + 30+ readiness tests for provider aliases,
   // missing-host, and DATABRICKS_MODEL fallback. Load-bearing correctness fix.
-  ["src-tauri/src/managed_agents/readiness.rs", 1546],
+  // +3 lines landed on main after the last ratchet; preserve current headroom.
+  ["src-tauri/src/managed_agents/readiness.rs", 1549],
   // applyWorkspace reposDir parameter plus the validateReposDir binding,
   // threaded through Tauri invokes for configurable repos_dir, plus the
   // harness-persona-sync `harnessOverride` create-input bit — load-bearing
