@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use super::{
-    classify_runtime, create_time_agent_command_override, default_agent_command,
-    divergent_agent_command_override, effective_agent_command, find_via_login_shell,
-    managed_agent_avatar_url, normalize_agent_args, record_agent_command,
+    classify_runtime, command_search_dirs, create_time_agent_command_override,
+    default_agent_command, divergent_agent_command_override, effective_agent_command,
+    find_via_login_shell, managed_agent_avatar_url, normalize_agent_args, record_agent_command,
     update_time_agent_command_override, BUZZ_AGENT_AVATAR_URL, CLAUDE_CODE_AVATAR_URL,
     CODEX_AVATAR_URL, GOOSE_AVATAR_URL,
 };
@@ -39,6 +39,24 @@ fn resolves_known_avatar_for_command_paths_and_aliases() {
 #[test]
 fn returns_none_for_unknown_commands() {
     assert!(managed_agent_avatar_url("custom-agent").is_none());
+}
+
+#[test]
+fn command_search_prefers_current_build_profile() {
+    let dirs = command_search_dirs();
+    let debug_index = dirs
+        .iter()
+        .position(|path| path.ends_with("target/debug"))
+        .expect("debug search directory");
+    let release_index = dirs
+        .iter()
+        .position(|path| path.ends_with("target/release"))
+        .expect("release search directory");
+    if cfg!(debug_assertions) {
+        assert!(debug_index < release_index);
+    } else {
+        assert!(release_index < debug_index);
+    }
 }
 
 #[test]

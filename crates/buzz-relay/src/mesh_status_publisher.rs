@@ -53,6 +53,12 @@ pub struct BuzzMeshStatus {
     /// Mesh identity, if mesh-llm has joined/created one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh_id: Option<String>,
+    /// Reporter's mesh owner id (mesh-llm owner keypair identity). Serve
+    /// nodes build their admission allowlist from the member owner ids in
+    /// these notes, so a member's node is only dialable/joinable by nodes
+    /// whose owner id appears in a relay-signed status note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     /// Human mesh name, if configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh_name: Option<String>,
@@ -109,6 +115,7 @@ pub fn sanitize_mesh_status(payload: &Value, now_unix: u64) -> BuzzMeshStatus {
     let node_id = string_field(payload, "node_id");
     let mesh_id = string_field(payload, "mesh_id");
     let mesh_name = string_field(payload, "mesh_name");
+    let owner_id = string_field(payload, "ownerId").or_else(|| string_field(payload, "owner_id"));
     let my_vram_gb = payload.get("my_vram_gb").and_then(Value::as_f64);
 
     let mut models = Vec::<MeshModelOption>::new();
@@ -182,6 +189,7 @@ pub fn sanitize_mesh_status(payload: &Value, now_unix: u64) -> BuzzMeshStatus {
         status_type: MESH_STATUS_TYPE.to_string(),
         updated_at: now_unix,
         mesh_id,
+        owner_id,
         mesh_name,
         serve_targets,
         models,
@@ -355,6 +363,31 @@ mod tests {
         assert!(!serialized.contains("source_model_path"));
         assert!(!serialized.contains("runtime_dir"));
         assert!(!serialized.contains("/secret"));
+    }
+
+    #[test]
+    fn sanitizer_carries_owner_id_for_admission_roster() {
+        let payload = serde_json::json!({
+            "token": "endpoint-token-a",
+            "ownerId": "owner-abc123",
+            "hosted_models": ["Qwen3-8B-Q4_K_M"],
+            "peers": []
+        });
+        let status = sanitize_mesh_status(&payload, 123);
+        assert_eq!(status.owner_id.as_deref(), Some("owner-abc123"));
+
+        // snake_case variant also accepted; absent stays None (and is omitted
+        // from the serialized note).
+        let snake = serde_json::json!({ "token": "t", "owner_id": "owner-x", "peers": [] });
+        assert_eq!(
+            sanitize_mesh_status(&snake, 1).owner_id.as_deref(),
+            Some("owner-x")
+        );
+        let none = serde_json::json!({ "token": "t", "peers": [] });
+        let status = sanitize_mesh_status(&none, 1);
+        assert_eq!(status.owner_id, None);
+        let serialized = serde_json::to_string(&status).unwrap();
+        assert!(!serialized.contains("ownerId"));
     }
 
     #[test]

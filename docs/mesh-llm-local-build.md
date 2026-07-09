@@ -58,26 +58,30 @@ Do not use dynamic-link locally unless you already have compatible `llama`,
 `llama-common`, and `mtmd` dynamic libraries. The default static build is the
 supported local path for M1.
 
-## Connectivity model: public iroh relays off, raw STUN on (WAN)
+## Connectivity model: iroh relay tunneling on by default, raw STUN on (WAN)
 
-Buzz Desktop starts the embedded mesh node with `disable_iroh_relays(true)`
-(mesh-llm fork rev `bc2f1106`, `RelayPolicy::ExplicitlyDisabled`): **no public
-iroh relays** (no `*.iroh.link` traffic, no relay transport), so there is no
-empty-relay fallback to public infrastructure.
+Buzz Desktop starts the embedded mesh node with iroh's **default relay
+servers enabled** (`BUZZ_MESH_IROH_RELAYS`, default on). Peers first attempt
+a direct connection — the node discovers its public address via raw STUN
+(`stun.l.google.com` / `stun.cloudflare.com`), injects it into the invite
+token / `EndpointAddr`, and both sides hole-punch over UDP after the
+relay-signed `24621`/`24622` call-me-now exchange. When hole-punching fails
+(e.g. both peers behind symmetric NATs), traffic falls back to an iroh relay
+tunnel; iroh keeps probing and upgrades to a direct path when one appears.
 
-Raw STUN **remains on** under this policy: the node discovers its public address
-(via `stun.l.google.com` / `stun.cloudflare.com`) and injects it into the invite
-token / `EndpointAddr`. That address rides the relay-signed `24621`/`24622`
-call-me-now exchange, and peers hole-punch directly over UDP — so this works over
-**WAN**, not just LAN. STUN is a "what's my public IP" lookup, not a relay or a
-data path; the Buzz relay performs the address-exchange coordination.
+Iroh relays are **transport-only**: they forward end-to-end encrypted QUIC
+(ciphertext), perform no admission, and are unrelated to the Buzz relay
+(which does identity, membership, and matchmaking). Mesh presence is never
+published to public Nostr relays — `publish(false)` is hardcoded and the
+node's Nostr relay list stays empty regardless of this setting.
 
-Residual limit (intentional v1): with iroh relays off there is **no relay
-transport fallback**, so two peers both behind **symmetric NATs** may fail to
-hole-punch. Works for the common cases (≥1 side cone-NAT / port-forwarded /
-server). A hosted private-iroh-relay fallback (relay advertises an
-`iroh_relay_url` + NIP-98 auth) is the planned follow-up once the relay side is
-wired end-to-end.
+`BUZZ_MESH_IROH_RELAYS=0` disables relay transport entirely (direct QUIC
+only) for metadata-conscious deployments; a comma-separated URL list selects
+custom (e.g. self-hosted) iroh relays instead of the defaults.
+
+Because reachability is no longer a de-facto gate, membership enforcement is
+the mesh admission layer's job (owner allowlist derived from relay
+membership) — see the admission section / roadmap.
 
 ## Mesh-compute e2e acceptance matrix
 

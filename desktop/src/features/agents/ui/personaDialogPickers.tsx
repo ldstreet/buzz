@@ -19,6 +19,7 @@ const KNOWN_LLM_PROVIDER_IDS = [
   "databricks_v2",
   "openai",
   "openai-compat",
+  "relay-mesh",
 ] as const;
 
 type PersonaLlmProviderId = (typeof KNOWN_LLM_PROVIDER_IDS)[number];
@@ -49,6 +50,7 @@ const PERSONA_LLM_PROVIDER_OPTIONS: readonly PersonaModelOption[] = [
   { id: "anthropic", label: "Anthropic" },
   { id: "openai", label: "OpenAI" },
   { id: "openai-compat", label: "OpenAI-compatible" },
+  { id: "relay-mesh", label: "Buzz shared compute" },
   { id: "databricks_v2", label: "Databricks v2 (AI Gateway)" },
 ];
 

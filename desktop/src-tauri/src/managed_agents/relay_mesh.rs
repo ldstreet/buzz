@@ -1,8 +1,46 @@
-use super::ManagedAgentRecord;
-pub use super::RelayMeshConfig;
+#[cfg(feature = "mesh-llm")]
+use super::{ManagedAgentRecord, RelayMeshConfig};
 
 pub const RELAY_MESH_API_BASE_URL: &str = "http://127.0.0.1:9337/v1";
 pub const RELAY_MESH_API_KEY_PLACEHOLDER: &str = "buzz-mesh-local";
+pub const RELAY_MESH_PROVIDER_ID: &str = "relay-mesh";
+pub const RELAY_MESH_AUTO_MODEL_ID: &str = "auto";
+
+/// Translate the native Buzz shared compute provider into the OpenAI-compatible
+/// transport understood by buzz-agent. These are derived runtime details, not
+/// user-owned agent configuration.
+#[cfg(feature = "mesh-llm")]
+pub fn apply_relay_mesh_env(
+    env: &mut std::collections::BTreeMap<String, String>,
+    record: &ManagedAgentRecord,
+) {
+    if record.provider.as_deref() != Some(RELAY_MESH_PROVIDER_ID) {
+        return;
+    }
+    let model = record
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RELAY_MESH_AUTO_MODEL_ID)
+        .to_string();
+    env.insert("BUZZ_AGENT_PROVIDER".to_string(), "openai".to_string());
+    env.insert("BUZZ_AGENT_MODEL".to_string(), model.clone());
+    env.insert(
+        "OPENAI_COMPAT_BASE_URL".to_string(),
+        RELAY_MESH_API_BASE_URL.to_string(),
+    );
+    env.insert("OPENAI_COMPAT_MODEL".to_string(), model);
+    env.insert(
+        "OPENAI_COMPAT_API_KEY".to_string(),
+        RELAY_MESH_API_KEY_PLACEHOLDER.to_string(),
+    );
+    env.insert("OPENAI_COMPAT_API".to_string(), "chat".to_string());
+    env.insert(
+        "BUZZ_AGENT_MAX_OUTPUT_TOKENS".to_string(),
+        "4096".to_string(),
+    );
+}
 
 /// Resolve a record's relay-mesh config, typed field first.
 ///
@@ -12,6 +50,16 @@ pub const RELAY_MESH_API_KEY_PLACEHOLDER: &str = "buzz-mesh-local";
 /// field and need no env-var sniffing at all.
 #[cfg(feature = "mesh-llm")]
 pub fn relay_mesh_config(record: &ManagedAgentRecord) -> Option<RelayMeshConfig> {
+    if record.provider.as_deref() == Some(RELAY_MESH_PROVIDER_ID) {
+        let model_ref = record
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(RELAY_MESH_AUTO_MODEL_ID)
+            .to_string();
+        return Some(RelayMeshConfig { model_ref });
+    }
     if let Some(config) = &record.relay_mesh {
         return Some(config.clone());
     }
@@ -58,7 +106,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::managed_agents::{BackendKind, RespondTo};
+    use crate::managed_agents::{BackendKind, ManagedAgentRecord, RespondTo};
 
     fn fixture() -> ManagedAgentRecord {
         ManagedAgentRecord {
@@ -83,6 +131,7 @@ mod tests {
             mcp_toolsets: None,
             env_vars: BTreeMap::new(),
             start_on_app_launch: false,
+            auto_restart_on_config_change: true,
             runtime_pid: None,
             backend: BackendKind::Local,
             backend_agent_id: None,
@@ -100,6 +149,18 @@ mod tests {
             last_error_code: None,
             respond_to: RespondTo::OwnerOnly,
             respond_to_allowlist: vec![],
+            display_name: None,
+            slug: None,
+            runtime: None,
+            name_pool: Vec::new(),
+            is_builtin: false,
+            is_active: true,
+            source_team: None,
+            source_team_persona_slug: None,
+            definition_respond_to: None,
+            definition_respond_to_allowlist: Vec::new(),
+            definition_mcp_toolsets: None,
+            definition_parallelism: None,
             relay_mesh: None,
         }
     }
@@ -159,13 +220,12 @@ mod tests {
 
     #[cfg(feature = "mesh-llm")]
     #[test]
-    fn typed_field_recognized_with_zero_env_vars() {
+    fn native_provider_fields_are_authoritative() {
         // The whole point: a typed record needs no env-var sniffing to be
         // recognized as a relay-mesh agent.
         let mut rec = fixture();
-        rec.relay_mesh = Some(RelayMeshConfig {
-            model_ref: "Qwen3".to_string(),
-        });
+        rec.provider = Some(RELAY_MESH_PROVIDER_ID.to_string());
+        rec.model = Some("Qwen3".to_string());
         assert!(rec.env_vars.is_empty());
         assert_eq!(
             relay_mesh_config(&rec),
@@ -178,9 +238,10 @@ mod tests {
 
     #[cfg(feature = "mesh-llm")]
     #[test]
-    fn typed_field_wins_over_env_sniff() {
-        // When both are present, the typed field is authoritative.
+    fn native_provider_fields_win_over_legacy_config() {
         let mut rec = fixture();
+        rec.provider = Some(RELAY_MESH_PROVIDER_ID.to_string());
+        rec.model = Some("native-model".to_string());
         rec.relay_mesh = Some(RelayMeshConfig {
             model_ref: "typed-model".to_string(),
         });
@@ -196,7 +257,7 @@ mod tests {
                 RELAY_MESH_API_KEY_PLACEHOLDER.to_string(),
             ),
         ]);
-        assert_eq!(relay_mesh_model_id(&rec).as_deref(), Some("typed-model"));
+        assert_eq!(relay_mesh_model_id(&rec).as_deref(), Some("native-model"));
     }
 
     #[cfg(feature = "mesh-llm")]

@@ -44,22 +44,18 @@ import {
   personaBehaviorDraftValid,
 } from "./personaBehaviorDraft";
 import {
-  AUTO_MODEL_DROPDOWN_VALUE,
   AUTO_PROVIDER_DROPDOWN_VALUE,
-  CUSTOM_MODEL_DROPDOWN_VALUE,
   CUSTOM_PROVIDER_DROPDOWN_VALUE,
   computeLocalModeGate,
   formatRuntimeOptionLabel,
   getBakedSatisfiedEnvKeys,
   getDefaultLlmProviderLabel,
   getDefaultPersonaRuntime,
-  getModelSelectValue,
   getPersonaModelOptions,
   getPersonaProviderOptions,
   getProviderApiKeyConfig,
   getProviderApiKeyEnvVar,
   getRuntimePersonaModelOptions,
-  hasPersonaModelOption,
   NO_RUNTIME_DROPDOWN_VALUE,
   providerRequiresExplicitModel,
   requiredCredentialEnvKeys,
@@ -72,6 +68,10 @@ import {
   sortPersonaRuntimes,
 } from "./personaDialogPickers";
 import { RequiredFieldLabel } from "./personaProviderModelFields";
+import {
+  modelDropdownOptions as buildModelDropdownOptions,
+  relayMeshModelPickerState,
+} from "./relayMeshModelPicker";
 import {
   envVarsMergingAdvancedEdit,
   envVarsWithProviderApiKey,
@@ -346,11 +346,13 @@ export function AgentDefinitionDialog({
       systemPrompt: systemPrompt,
       runtime: trimmedRuntime || undefined,
       model:
-        trimmedRuntime || modelProviderEditableWithoutRuntime
-          ? model.trim() || undefined
-          : shouldPreserveHiddenModelProvider
-            ? initialValues.model
-            : undefined,
+        provider.trim() === "relay-mesh"
+          ? model.trim() || "auto"
+          : trimmedRuntime || modelProviderEditableWithoutRuntime
+            ? model.trim() || undefined
+            : shouldPreserveHiddenModelProvider
+              ? initialValues.model
+              : undefined,
       provider: llmProviderVisibleForSubmit
         ? provider.trim() || undefined
         : shouldPreserveHiddenModelProvider
@@ -489,18 +491,21 @@ export function AgentDefinitionDialog({
     providerForModelScope,
   );
   const runtimeModelOptions = getRuntimePersonaModelOptions(runtime);
-  const modelOptions = discoveredModelOptions ?? staticModelOptions;
-  const isModelCustom = !hasPersonaModelOption(
-    discoveredModelOptions ?? runtimeModelOptions,
+  const {
+    isCustom: isModelCustom,
+    isRelayMesh,
+    options: modelOptions,
+    selectValue: modelSelectValue,
+    showCustomInput: showCustomModelInput,
+  } = relayMeshModelPickerState({
+    discoveredOptions: discoveredModelOptions,
+    fallbackOptions: staticModelOptions,
+    knownOptions: discoveredModelOptions ?? runtimeModelOptions,
+    isCustomEditing: isCustomModelEditing,
     model,
-  );
-  const modelSelectValue = getModelSelectValue({
-    isCustomModelEditing,
-    isModelCustom,
-    model,
+    modelFieldVisible,
+    provider: providerForModelScope,
   });
-  const showCustomModelInput =
-    modelFieldVisible && (isCustomModelEditing || isModelCustom);
   const providerOptions = getPersonaProviderOptions(
     providerForModelScope,
     runtime,
@@ -558,22 +563,12 @@ export function AgentDefinitionDialog({
     })),
     { label: "Custom provider...", value: CUSTOM_PROVIDER_DROPDOWN_VALUE },
   ];
-  const modelDropdownOptions: PersonaDropdownOption[] = [
-    ...modelOptions.map((option) => ({
-      label: option.label,
-      value: option.id || AUTO_MODEL_DROPDOWN_VALUE,
-    })),
-    ...(modelDiscoveryLoading && discoveredModelOptions === null
-      ? [
-          {
-            disabled: true,
-            label: "Loading models...",
-            value: MODEL_DISCOVERY_LOADING_VALUE,
-          },
-        ]
-      : []),
-    { label: "Custom model...", value: CUSTOM_MODEL_DROPDOWN_VALUE },
-  ];
+  const modelDropdownOptions = buildModelDropdownOptions({
+    allowCustom: !isRelayMesh,
+    loading: modelDiscoveryLoading && discoveredModelOptions === null,
+    loadingValue: MODEL_DISCOVERY_LOADING_VALUE,
+    options: modelOptions,
+  });
   const previewLabel = displayName.trim() || "Agent name";
   const previewAvatarUrl = avatarUrl.trim() || null;
   const runtimeWarning =
@@ -669,9 +664,14 @@ export function AgentDefinitionDialog({
   }
 
   function handleProviderDropdownChange(nextValue: string) {
+    const nextProvider =
+      nextValue === AUTO_PROVIDER_DROPDOWN_VALUE ? "" : nextValue;
+    if (nextProvider === "relay-mesh" && runtime !== "buzz-agent") {
+      handleRuntimeDropdownChange("buzz-agent");
+    }
     applySelection(
       selectionOnProviderDropdownChange(selection, {
-        runtime,
+        runtime: nextProvider === "relay-mesh" ? "buzz-agent" : runtime,
         nextValue,
         clearModelWhenApiKeyMissing: true,
       }),

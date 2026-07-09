@@ -111,6 +111,58 @@ test("creates a new mocked stream", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toContainText(channelName);
 });
 
+test("create agent persists Buzz shared compute with auto model", async ({
+  page,
+}) => {
+  const agentName = `Shared compute agent ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("open-agents-view").click();
+  await page.getByTestId("new-agent-card").click();
+  await page.getByRole("menuitem", { name: /^New agent$/ }).click();
+  await page.locator("#persona-display-name").fill(agentName);
+
+  const provider = page.locator("#persona-llm-provider");
+  await expect(provider).toBeVisible({ timeout: 10_000 });
+  await provider.press("Enter");
+  await page
+    .getByRole("menuitemradio", {
+      exact: true,
+      name: "Buzz shared compute",
+    })
+    .click();
+
+  const model = page.locator("#persona-model");
+  await expect(model).toContainText("Default (auto)");
+  await page.getByTestId("persona-dialog-submit").click();
+  await expect(
+    page.getByRole("heading", { name: "Agent created" }),
+  ).toBeVisible({ timeout: 10_000 });
+
+  const createPayload = await page.evaluate((name) => {
+    const log = (
+      window as Window & {
+        __BUZZ_E2E_COMMAND_LOG__?: Array<{
+          command: string;
+          payload: unknown;
+        }>;
+      }
+    ).__BUZZ_E2E_COMMAND_LOG__;
+    return log
+      ?.filter((entry) => entry.command === "create_managed_agent")
+      .map((entry) => entry.payload as { input?: Record<string, unknown> })
+      .find((payload) => payload.input?.name === name)?.input;
+  }, agentName);
+
+  expect(createPayload).toMatchObject({
+    agentCommand: "buzz-agent",
+    model: "auto",
+    provider: "relay-mesh",
+    spawnAfterCreate: true,
+    startOnAppLaunch: true,
+  });
+});
+
 test("create agent supports parallelism and system prompt overrides", async ({
   page,
 }) => {

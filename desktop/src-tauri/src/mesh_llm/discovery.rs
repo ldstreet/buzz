@@ -14,9 +14,32 @@ fn dedupe_targets(targets: Vec<MeshServeTarget>) -> Vec<MeshServeTarget> {
     by_endpoint.into_values().collect()
 }
 
+/// Collect the mesh owner ids published in relay-signed status notes. This is
+/// the admission roster: serve nodes allowlist exactly these owners. On a
+/// membership-enforcing relay only members can get a note published, so the
+/// roster is the member set; on an open relay it degrades to "anyone who
+/// published", matching that relay's (non-)gating everywhere else.
+pub fn owner_ids_from_events(events: &[nostr::Event]) -> Vec<String> {
+    let mut ids: Vec<String> = events
+        .iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event.content).ok())
+        .filter_map(|content| {
+            content
+                .get("ownerId")
+                .or_else(|| content.get("owner_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|id| !id.is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
     if events.is_empty() {
-        return MeshAvailability::unavailable("relay mesh status is not published yet");
+        return MeshAvailability::unavailable("Buzz shared compute status is not published yet");
     }
 
     // Relay status is now per reporter (d=buzz-relay-mesh:<pubkey>), so a
@@ -79,7 +102,7 @@ pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
     }
 
     if !saw_valid_status {
-        return MeshAvailability::unavailable("relay mesh status is malformed");
+        return MeshAvailability::unavailable("Buzz shared compute status is malformed");
     }
 
     let serve_targets = dedupe_targets(all_targets);
@@ -92,7 +115,7 @@ pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
         reason: if available {
             None
         } else {
-            Some("no relay mesh serve targets are available".to_string())
+            Some("no Buzz shared compute serving members are available".to_string())
         },
         models,
         serve_targets,

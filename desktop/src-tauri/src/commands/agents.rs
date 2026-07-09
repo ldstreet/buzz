@@ -161,10 +161,10 @@ fn normalize_relay_mesh(
 
     let model_ref = config.model_ref.trim();
     if model_ref.is_empty() {
-        return Err("relay mesh modelRef is required".to_string());
+        return Err("Buzz shared compute model is required".to_string());
     }
     if backend != &BackendKind::Local {
-        return Err("relay mesh agents must use the local backend".to_string());
+        return Err("Buzz shared compute agents must use the local backend".to_string());
     }
 
     Ok(Some(RelayMeshConfig {
@@ -662,6 +662,15 @@ pub async fn create_managed_agent(
         let snapshot_model = persona_snapshot.as_ref().and_then(|s| s.model.clone());
         let snapshot_provider = persona_snapshot.as_ref().and_then(|s| s.provider.clone());
         let snapshot_source_version = persona_snapshot.as_ref().map(|s| s.source_version.clone());
+        let effective_provider = snapshot_provider
+            .or_else(|| input.provider.as_deref().and_then(trim_to_optional_string));
+        let mut effective_model =
+            snapshot_model.or_else(|| input.model.as_deref().and_then(trim_to_optional_string));
+        if effective_provider.as_deref() == Some(crate::managed_agents::RELAY_MESH_PROVIDER_ID)
+            && effective_model.is_none()
+        {
+            effective_model = Some(crate::managed_agents::RELAY_MESH_AUTO_MODEL_ID.to_string());
+        }
 
         // Mint-time behavioral quad: explicit input wins, then the linked
         // definition's NIP-AP defaults, then client defaults. The ONLY parse
@@ -715,22 +724,8 @@ pub async fn create_managed_agent(
                     .filter(|value| !value.is_empty())
                     .map(str::to_string)
             }),
-            model: snapshot_model.or_else(|| {
-                input
-                    .model
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            }),
-            provider: snapshot_provider.or_else(|| {
-                input
-                    .provider
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            }),
+            model: effective_model.clone(),
+            provider: effective_provider.clone(),
             persona_source_version: snapshot_source_version,
             mcp_toolsets: minted.mcp_toolsets.clone(),
             // Provider agents are managed externally — force false.
@@ -771,7 +766,15 @@ pub async fn create_managed_agent(
             definition_respond_to_allowlist: Vec::new(),
             definition_mcp_toolsets: None,
             definition_parallelism: None,
-            relay_mesh: relay_mesh.clone(),
+            relay_mesh: if effective_provider.as_deref()
+                == Some(crate::managed_agents::RELAY_MESH_PROVIDER_ID)
+            {
+                effective_model
+                    .clone()
+                    .map(|model_ref| RelayMeshConfig { model_ref })
+            } else {
+                relay_mesh.clone()
+            },
         };
 
         records.push(record);

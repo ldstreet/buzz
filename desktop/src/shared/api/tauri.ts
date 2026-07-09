@@ -1010,6 +1010,7 @@ export async function createManagedAgent(input: CreateManagedAgentInput) {
         systemPrompt: input.systemPrompt,
         avatarUrl: input.avatarUrl,
         model: input.model,
+        provider: input.provider,
         envVars: input.envVars ?? {},
         spawnAfterCreate: input.spawnAfterCreate,
         startOnAppLaunch: input.startOnAppLaunch,

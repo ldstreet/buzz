@@ -27,15 +27,6 @@ pub async fn mesh_ensure_client_node(
 }
 
 #[tauri::command]
-pub async fn mesh_prepare_relay_mesh_client(
-    _app: tauri::AppHandle,
-    _state: State<'_, AppState>,
-    _request: serde_json::Value,
-) -> CmdResult<serde_json::Value> {
-    Err("mesh-llm feature not enabled".to_string())
-}
-
-#[tauri::command]
 pub async fn mesh_stop_node(
     _app: tauri::AppHandle,
     _state: State<'_, AppState>,
@@ -56,7 +47,7 @@ pub async fn mesh_installed_models(
 }
 
 #[tauri::command]
-pub fn mesh_agent_preset(_request: serde_json::Value) -> CmdResult<serde_json::Value> {
+pub async fn mesh_model_catalog() -> CmdResult<serde_json::Value> {
     Err("mesh-llm feature not enabled".to_string())
 }
 

@@ -251,7 +251,7 @@ test-unit:
 test-integration:
     ./scripts/run-tests.sh integration
 
-# Mesh-compute e2e: the CI-safe layers (relay mesh signaling invariants + Playwright UI)
+# Buzz shared compute e2e: CI-safe signaling invariants + Playwright UI
 mesh-e2e:
     cargo test -p buzz-relay mesh_signaling
     cd {{desktop_dir}} && pnpm test:e2e:integration -- mesh-compute.spec.ts

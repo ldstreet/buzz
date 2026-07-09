@@ -463,6 +463,7 @@ type RawManagedAgent = {
   system_prompt: string | null;
   avatar_url: string | null;
   model: string | null;
+  provider?: string | null;
   env_vars?: Record<string, string>;
   status: "running" | "stopped" | "deployed" | "not_deployed";
   pid: number | null;
@@ -1063,6 +1064,7 @@ function cloneManagedAgent(agent: MockManagedAgent): RawManagedAgent {
     system_prompt: agent.system_prompt,
     avatar_url: agent.avatar_url ?? null,
     model: agent.model,
+    provider: agent.provider ?? null,
     env_vars: { ...(agent.env_vars ?? {}) },
     status: agent.status,
     pid: agent.pid,
@@ -6314,6 +6316,9 @@ async function handleCreatePersona(args: {
     displayName: string;
     avatarUrl?: string;
     systemPrompt: string;
+    runtime?: string;
+    model?: string;
+    provider?: string;
     envVars?: Record<string, string>;
     behavior?: PersonaBehaviorInput;
   };
@@ -6324,6 +6329,9 @@ async function handleCreatePersona(args: {
     display_name: args.input.displayName.trim(),
     avatar_url: args.input.avatarUrl?.trim() || null,
     system_prompt: args.input.systemPrompt.trim(),
+    runtime: args.input.runtime?.trim() || null,
+    model: args.input.model?.trim() || null,
+    provider: args.input.provider?.trim() || null,
     is_builtin: false,
     is_active: true,
     source_team: null,
@@ -6342,6 +6350,9 @@ async function handleUpdatePersona(args: {
     displayName: string;
     avatarUrl?: string;
     systemPrompt: string;
+    runtime?: string;
+    model?: string;
+    provider?: string;
     envVars?: Record<string, string>;
     behavior?: PersonaBehaviorInput;
   };
@@ -6359,6 +6370,9 @@ async function handleUpdatePersona(args: {
   persona.display_name = args.input.displayName.trim();
   persona.avatar_url = args.input.avatarUrl?.trim() || null;
   persona.system_prompt = args.input.systemPrompt.trim();
+  persona.runtime = args.input.runtime?.trim() || null;
+  persona.model = args.input.model?.trim() || null;
+  persona.provider = args.input.provider?.trim() || null;
   if (args.input.envVars !== undefined) {
     // Absent = preserve; present = replace entirely (matches Rust handler).
     persona.env_vars = { ...args.input.envVars };
@@ -6643,6 +6657,7 @@ async function handleCreateManagedAgent(
       systemPrompt?: string;
       avatarUrl?: string;
       model?: string;
+      provider?: string;
       envVars?: Record<string, string>;
       spawnAfterCreate?: boolean;
       startOnAppLaunch?: boolean;
@@ -6718,7 +6733,8 @@ async function handleCreateManagedAgent(
     mcp_toolsets: mintMcpToolsets,
     system_prompt: args.input.systemPrompt?.trim() || null,
     avatar_url: avatarUrl,
-    model: args.input.model?.trim() || null,
+    model: args.input.model?.trim() || linkedPersona?.model || null,
+    provider: args.input.provider?.trim() || linkedPersona?.provider || null,
     env_vars: { ...(args.input.envVars ?? {}) },
     status: args.input.spawnAfterCreate ? "running" : "stopped",
     pid: args.input.spawnAfterCreate ? 42000 + mockManagedAgents.length : null,
@@ -6783,14 +6799,7 @@ function getMockManagedAgent(pubkey: string): MockManagedAgent {
 }
 
 function isRelayMeshManagedAgent(agent: MockManagedAgent): boolean {
-  const env = agent.env_vars ?? {};
-  return (
-    agent.backend.type === "local" &&
-    env.BUZZ_AGENT_PROVIDER === "openai" &&
-    env.OPENAI_COMPAT_BASE_URL?.replace(/\/+$/, "") ===
-      "http://127.0.0.1:9337/v1" &&
-    env.OPENAI_COMPAT_API_KEY === "buzz-mesh-local"
-  );
+  return agent.backend.type === "local" && agent.provider === "relay-mesh";
 }
 
 async function handleStartManagedAgent(args: {
@@ -6801,13 +6810,14 @@ async function handleStartManagedAgent(args: {
     // Model the backend start preflight (ensure_relay_mesh_for_record): a
     // saved relay-mesh agent re-resolves a live serve target for its model
     // and only fails when no peer currently serves it.
-    const modelId = agent.env_vars?.OPENAI_COMPAT_MODEL;
+    const modelId = agent.model ?? "auto";
     const hasLiveTarget =
       mockMeshState.admitted &&
-      mockMeshState.models.some((model) => model.id === modelId);
+      (modelId === "auto" ||
+        mockMeshState.models.some((model) => model.id === modelId));
     if (!hasLiveTarget) {
       throw new Error(
-        "relay mesh agents cannot be started from saved state because no live serve target is available for this model. Start serving on a mesh peer, or create a new agent with Run on relay mesh selected to refresh the target for http://127.0.0.1:9337/v1.",
+        "Buzz shared compute cannot start because no live member is serving this model.",
       );
     }
   }
@@ -8140,46 +8150,6 @@ export function maybeInstallE2eTauriMocks() {
         mockMeshState.nodeState = "running";
         mockMeshState.nodeMode = "client";
         return meshNodeStatus("running", "client");
-      case "mesh_prepare_relay_mesh_client": {
-        // The Rust coordinator owns connect signaling. In the browser e2e
-        // bridge, mirror the event template it would publish so specs can keep
-        // asserting canonical #p targets without resurrecting the old TS
-        // signaling helper.
-        if (!mockMeshState.admitted) {
-          throw new Error(mockMeshState.denyReason);
-        }
-        mockMeshState.nodeState = "running";
-        mockMeshState.nodeMode = "client";
-        const target = (
-          payload as {
-            request?: {
-              target?: {
-                endpointAddr?: string;
-                endpointId?: string | null;
-                reporterPubkey?: string;
-              };
-            };
-          } | null
-        )?.request?.target;
-        const reporterPubkey = target?.reporterPubkey?.trim().toLowerCase();
-        const selfPubkey = (
-          identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey
-        ).toLowerCase();
-        if (reporterPubkey && reporterPubkey !== selfPubkey) {
-          window.__BUZZ_E2E_SIGNED_EVENTS__?.push({
-            kind: 24621,
-            tags: [["p", reporterPubkey]],
-            content: JSON.stringify({
-              self_endpoint_addr: "mock-endpoint-addr",
-              peer_endpoint_addr: target?.endpointAddr ?? "mock-endpoint-addr",
-              self_endpoint_id: "mock-endpoint-id",
-              peer_endpoint_id: target?.endpointId ?? undefined,
-              attempt_id: "mock-attempt-id",
-            }),
-          });
-        }
-        return meshNodeStatus("running", "client");
-      }
       case "mesh_dial_endpoint_addr":
         return meshNodeStatus("running", mockMeshState.nodeMode ?? "client");
       case "mesh_status_report_payload":
@@ -8193,27 +8163,6 @@ export function maybeInstallE2eTauriMocks() {
               hosted_models: mockMeshState.models.map((model) => model.id),
             }
           : null;
-      case "mesh_agent_preset": {
-        const req = (payload as { request?: { modelId?: string } } | null)
-          ?.request;
-        const model = req?.modelId ?? mockMeshState.models[0]?.id ?? "";
-        return {
-          providerId: "relay-mesh" as const,
-          label: "Run on relay mesh",
-          acpCommand: "",
-          agentCommand: "buzz-agent",
-          agentArgs: [],
-          mcpCommand: "",
-          model,
-          envVars: {
-            BUZZ_AGENT_PROVIDER: "openai",
-            OPENAI_COMPAT_BASE_URL: "http://127.0.0.1:9337/v1",
-            OPENAI_COMPAT_MODEL: model,
-            OPENAI_COMPAT_API_KEY: "buzz-mesh-local",
-            OPENAI_COMPAT_API: "chat",
-          },
-        };
-      }
       case "get_identity": {
         const isLost =
           !mockIdentityLostCleared && activeConfig?.mock?.identityLost === true;
@@ -8693,11 +8642,17 @@ export function maybeInstallE2eTauriMocks() {
           },
         ];
         const models =
-          provider === "openai"
-            ? openAiModels
-            : provider === "anthropic"
-              ? anthropicModels
-              : [...anthropicModels, ...openAiModels];
+          provider === "relay-mesh"
+            ? mockMeshState.models.map((model) => ({
+                id: model.id,
+                name: model.name,
+                description: null,
+              }))
+            : provider === "openai"
+              ? openAiModels
+              : provider === "anthropic"
+                ? anthropicModels
+                : [...anthropicModels, ...openAiModels];
         return {
           agentName: "mock-agent",
           agentVersion: "0.0.0",

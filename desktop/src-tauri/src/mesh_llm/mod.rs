@@ -7,28 +7,44 @@ pub(crate) use coordinator::{
 pub use coordinator::{spawn_listener, start_client, MeshCoordinator};
 
 mod discovery;
-pub use discovery::{availability_from_events, mesh_status_filter};
+pub use discovery::{availability_from_events, mesh_status_filter, owner_ids_from_events};
 use discovery::{device_name_from_status, endpoint_id_from_status, enrich_status_payload_identity};
 
-mod preset;
-pub use preset::{agent_preset, MeshAgentPreset, MeshAgentPresetRequest};
+mod catalog;
+pub use catalog::{model_catalog, MeshModelCatalog};
 
-use mesh_llm_sdk::{client, serve, EmbeddedNodeHandle, MeshDiscoveryMode};
+mod identity;
+pub use identity::ensure_owner_identity;
+
+mod progress;
+pub use progress::install_progress_sink;
+
+use mesh_llm_sdk::{client, serve, EmbeddedNodeHandle, MeshDiscoveryMode, TrustPolicy};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const DEFAULT_MESH_API_PORT: u16 = 9337;
 const DEFAULT_MESH_CONSOLE_PORT: u16 = 3131;
 const MESH_STATUS_KIND: u64 = 30_621;
 const MESH_API_PORT_ENV: &str = "BUZZ_MESH_API_PORT";
 const MESH_CONSOLE_PORT_ENV: &str = "BUZZ_MESH_CONSOLE_PORT";
-const RELAY_MESH_API_KEY_PLACEHOLDER: &str = "buzz-mesh-local";
-/// ACP provider relay-mesh agents run on. Sources of truth for its command +
-/// MCP live in the runtime catalog (`known_acp_runtime_exact`); these are
-/// only the fallbacks. `buzz-agent` reads the `BUZZ_AGENT_PROVIDER` /
-/// `OPENAI_COMPAT_*` env vars below — goose (the global default) does not.
-const MESH_AGENT_PROVIDER_ID: &str = "buzz-agent";
-const MESH_AGENT_MCP_COMMAND: &str = "buzz-dev-mcp";
-
+/// Iroh relay tunneling for symmetric-NAT peers. Unset/empty/"1"/"default" =
+/// enabled with the SDK's default iroh relays (the default — members connect
+/// regardless of NAT). "0" = disabled (direct QUIC only, for
+/// metadata-conscious deployments). Any other value = comma-separated custom
+/// iroh relay URLs. Relays forward end-to-end encrypted QUIC (ciphertext
+/// only) and are transport-only; mesh presence is NEVER published to public
+/// Nostr relays regardless of this setting (`publish` is hardcoded false and
+/// the Nostr relay list stays empty).
+const MESH_IROH_RELAYS_ENV: &str = "BUZZ_MESH_IROH_RELAYS";
+/// First model load can include a multi-GB download plus Metal warmup; the
+/// SDK default (30s) times out long before that. Matches mesh-console.
+const MESH_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
+/// Sentinel model id meaning "let the mesh router pick". mesh-llm's OpenAI
+/// ingress auto-routes `"model": "auto"` to a context-compatible live target
+/// (`resolve_auto_routed_model`), so agents don't have to name a model and
+/// can't pick one that doesn't fit their prompt.
+pub const AUTO_MODEL_ID: &str = "auto";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshModelOption {
@@ -150,6 +166,14 @@ pub struct StartMeshNodeRequest {
     pub max_vram_gb: Option<u64>,
     #[serde(default)]
     pub join_token: Option<String>,
+    /// Mesh owner ids admitted to this node (the member roster from
+    /// relay-signed status notes). `None` = caller did not resolve a roster
+    /// (tests, direct invocations): the node runs without allowlist
+    /// enforcement, matching an open relay. `Some` = enforce
+    /// `TrustPolicy::Allowlist` over exactly these owners (self is always
+    /// included by the caller).
+    #[serde(default)]
+    pub trusted_owner_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,9 +225,14 @@ pub struct DesktopMeshRuntime {
     mode: MeshNodeMode,
     model_id: Option<String>,
     model_name: Option<String>,
+    /// The request this node was started with. Kept so the coordinator can
+    /// detect roster drift (membership changed → trusted owners changed) and
+    /// restart the node with the fresh roster — the SDK's trust store is
+    /// fixed at node start, so a restart is how roster changes take effect.
+    start_request: StartMeshNodeRequest,
 }
 
-fn initialize_mesh_native_runtime() -> anyhow::Result<()> {
+async fn initialize_mesh_native_runtime() -> anyhow::Result<()> {
     let cache = mesh_llm_sdk::native_runtime::native_runtime_cache(None)?;
     let installed = cache.installed()?;
     let current = mesh_llm_sdk::native_runtime::CURRENT_MESH_VERSION;
@@ -215,22 +244,67 @@ fn initialize_mesh_native_runtime() -> anyhow::Result<()> {
             "mesh native runtime for MeshLLM {current} is not installed; run `just mesh=1 staging` or `just mesh-e2e-hardware` to prepare it"
         );
     }
-    mesh_llm_host_runtime::initialize_host_runtime().map_err(|error| {
-        anyhow::anyhow!(
-            "mesh native runtime failed to load; run `just mesh=1 staging` or `just mesh-e2e-hardware` to repair it: {error}"
-        )
+    mesh_llm_host_runtime::initialize_host_runtime()
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "mesh native runtime failed to load; run `just mesh=1 staging` or `just mesh-e2e-hardware` to repair it: {error}"
+            )
+        })
+}
+
+/// Tokio worker stack size for the runtime that polls mesh-llm futures.
+///
+/// mesh-llm's async call chains (model download, node start/join) are deep
+/// enough to overflow tokio's default 2 MiB worker stacks — observed as a
+/// stack-guard SIGABRT inside `download_model_ref_with_progress_details`
+/// when polled on Tauri's stock runtime. Upstream runs its own binary on
+/// 8 MiB worker stacks for exactly this reason (mesh-llm `main.rs`,
+/// `DEFAULT_WORKER_STACK_SIZE`), as does mesh-console. `lib.rs` installs a
+/// runtime with this stack size via `tauri::async_runtime::set` before the
+/// app starts, so every command future gets the same headroom.
+pub const MESH_WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Pre-download the model (with byte progress through the output sink)
+/// before the node starts. Without this the download happens *inside*
+/// `serve::start()` where the UI can only show a frozen "starting…" state.
+/// Already-installed models return immediately from the cache scan.
+async fn ensure_model_downloaded(model: &str) -> anyhow::Result<()> {
+    let model_owned = model.to_string();
+    let installed = tokio::task::spawn_blocking(move || {
+        let cache = mesh_llm_node::models::default_huggingface_cache_dir();
+        mesh_llm_node::models::scan_installed_models(cache)
+            .iter()
+            .any(|m| m.model_ref.contains(&model_owned))
     })
+    .await
+    .unwrap_or(false);
+    if installed {
+        return Ok(());
+    }
+    mesh_llm_host_runtime::models::download_model_ref_with_progress_details(model, true)
+        .await
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("downloading {model} failed: {error}"))
 }
 
 impl DesktopMeshRuntime {
     pub async fn start(request: StartMeshNodeRequest) -> anyhow::Result<Self> {
         validate_no_leak_request(&request)?;
-        initialize_mesh_native_runtime()?;
+        initialize_mesh_native_runtime().await?;
         let model_id = request
             .model_id
             .clone()
             .filter(|value| !value.trim().is_empty());
         let model_name = model_id.clone();
+        // Serve mode downloads weights before the node starts so byte
+        // progress reaches the UI through the output sink; inside
+        // serve::start() the download is invisible.
+        if request.mode == MeshNodeMode::Serve {
+            if let Some(model) = model_id.as_deref() {
+                ensure_model_downloaded(model).await?;
+            }
+        }
         let handle = match request.mode {
             MeshNodeMode::Serve => {
                 let model = model_id
@@ -240,16 +314,39 @@ impl DesktopMeshRuntime {
                     .model(model)
                     .api_port(mesh_api_port()?)
                     .console_port(mesh_console_port()?)
+                    // No-leak invariants: never publish mesh presence, never
+                    // auto-discover other meshes, no public Nostr relays.
+                    // Iroh relays are transport-only and opt-in (see
+                    // MESH_IROH_RELAYS_ENV); everything else stays closed.
                     .publish(false)
                     .auto_join(false)
-                    .disable_iroh_relays(true)
                     .discovery_mode(MeshDiscoveryMode::Nostr)
+                    .startup_timeout(MESH_STARTUP_TIMEOUT)
                     .console_ui(true);
+                builder = match iroh_relay_mode() {
+                    IrohRelayMode::Disabled => builder.disable_iroh_relays(true),
+                    IrohRelayMode::Default => builder.disable_iroh_relays(false),
+                    IrohRelayMode::Custom(urls) => {
+                        builder.disable_iroh_relays(false).iroh_relays(urls)
+                    }
+                };
                 if let Some(max_vram_gb) = request.max_vram_gb {
                     builder = builder.max_vram_gb(max_vram_gb as f64);
                 }
                 if let Some(join_token) = request.join_token.as_deref() {
                     builder = builder.join_token(join_token);
+                }
+                // Admission: present our owner attestation, and when a member
+                // roster was resolved, admit only those owners. Membership in
+                // the Buzz relay is the source of the roster; possession of a
+                // dial pointer or relay reachability admits nobody.
+                let identity = ensure_owner_identity()?;
+                builder = builder.owner_key(identity.keystore_path.clone());
+                if let Some(owners) = normalized_roster(&request.trusted_owner_ids, &identity) {
+                    builder = builder
+                        .owner_required(true)
+                        .trust_policy(TrustPolicy::Allowlist)
+                        .trust_owners(owners);
                 }
                 serve::start(builder.build()).await?
             }
@@ -257,13 +354,31 @@ impl DesktopMeshRuntime {
                 let mut builder = client::EmbeddedClientConfig::builder()
                     .api_port(mesh_api_port()?)
                     .console_port(mesh_console_port()?)
+                    // Same no-leak invariants as serve mode above.
                     .publish(false)
                     .auto_join(false)
-                    .disable_iroh_relays(true)
                     .discovery_mode(MeshDiscoveryMode::Nostr)
+                    .startup_timeout(MESH_STARTUP_TIMEOUT)
                     .console_ui(true);
+                builder = match iroh_relay_mode() {
+                    IrohRelayMode::Disabled => builder.disable_iroh_relays(true),
+                    IrohRelayMode::Default => builder.disable_iroh_relays(false),
+                    IrohRelayMode::Custom(urls) => {
+                        builder.disable_iroh_relays(false).iroh_relays(urls)
+                    }
+                };
                 if let Some(join_token) = request.join_token.as_deref() {
                     builder = builder.join_token(join_token);
+                }
+                // Clients always present their owner attestation so allowlist
+                // enforcing serve nodes can verify and admit them.
+                let identity = ensure_owner_identity()?;
+                builder = builder.owner_key(identity.keystore_path.clone());
+                if let Some(owners) = normalized_roster(&request.trusted_owner_ids, &identity) {
+                    builder = builder
+                        .owner_required(true)
+                        .trust_policy(TrustPolicy::Allowlist)
+                        .trust_owners(owners);
                 }
                 client::start(builder.build()).await?
             }
@@ -274,7 +389,13 @@ impl DesktopMeshRuntime {
             mode: request.mode,
             model_id,
             model_name,
+            start_request: request,
         })
+    }
+
+    /// The request this node was started with (roster drift detection).
+    pub fn start_request(&self) -> &StartMeshNodeRequest {
+        &self.start_request
     }
 
     pub async fn status(&self) -> anyhow::Result<MeshNodeStatus> {
@@ -286,6 +407,9 @@ impl DesktopMeshRuntime {
         let status = self.handle.status().await?;
         let mut payload = status.payload;
         enrich_status_payload_identity(&mut payload, status.invite_token.as_deref());
+        if let Ok(identity) = ensure_owner_identity() {
+            payload["ownerId"] = serde_json::Value::String(identity.owner_id);
+        }
         Ok(payload)
     }
 
@@ -355,9 +479,53 @@ fn mesh_port_from_env(name: &str, default: u16) -> anyhow::Result<u16> {
     Ok(port)
 }
 
-fn relay_mesh_api_base_url() -> Result<String, String> {
-    let port = mesh_api_port().map_err(|error| error.to_string())?;
-    Ok(format!("http://127.0.0.1:{port}/v1"))
+/// Parsed value of `BUZZ_MESH_IROH_RELAYS` (see the const doc).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IrohRelayMode {
+    /// Direct QUIC only — no relay servers in the iroh endpoint (default).
+    Disabled,
+    /// Enable iroh's default relay servers for NAT tunneling.
+    Default,
+    /// Enable specific iroh relay URLs.
+    Custom(Vec<String>),
+}
+
+fn iroh_relay_mode() -> IrohRelayMode {
+    iroh_relay_mode_from(std::env::var(MESH_IROH_RELAYS_ENV).ok().as_deref())
+}
+
+fn iroh_relay_mode_from(raw: Option<&str>) -> IrohRelayMode {
+    match raw.map(str::trim) {
+        Some("0") => IrohRelayMode::Disabled,
+        None | Some("") | Some("1") | Some("default") => IrohRelayMode::Default,
+        Some(list) => IrohRelayMode::Custom(
+            list.split(',')
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+    }
+}
+
+/// Normalize a resolved roster for allowlist enforcement: sorted, deduped,
+/// and always containing our own owner id (so a solo sharer can dial their
+/// own node and the first member of a fresh relay isn't locked out).
+/// `None` in = `None` out (no roster resolved → no enforcement).
+fn normalized_roster(
+    trusted_owner_ids: &Option<Vec<String>>,
+    identity: &identity::OwnerIdentity,
+) -> Option<Vec<String>> {
+    let ids = trusted_owner_ids.as_ref()?;
+    let mut owners: Vec<String> = ids
+        .iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    owners.push(identity.owner_id.clone());
+    owners.sort();
+    owners.dedup();
+    Some(owners)
 }
 
 fn validate_no_leak_request(request: &StartMeshNodeRequest) -> anyhow::Result<()> {

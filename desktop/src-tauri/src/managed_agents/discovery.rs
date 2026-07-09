@@ -500,32 +500,32 @@ pub fn normalize_agent_args(command: &str, agent_args: Vec<String>) -> Vec<Strin
     normalized
 }
 
+fn profile_target_dirs(root: &Path) -> [PathBuf; 2] {
+    if cfg!(debug_assertions) {
+        // `just dev` builds fresh debug sidecars; never prefer stale release output.
+        [root.join("target/debug"), root.join("target/release")]
+    } else {
+        [root.join("target/release"), root.join("target/debug")]
+    }
+}
+
 fn command_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        workspace_root_dir().join("target/release"),
-        workspace_root_dir().join("target/debug"),
-    ];
-
+    let mut dirs = profile_target_dirs(&workspace_root_dir()).to_vec();
     if let Ok(current_dir) = std::env::current_dir() {
-        dirs.push(current_dir.join("target/release"));
-        dirs.push(current_dir.join("target/debug"));
+        dirs.extend(profile_target_dirs(&current_dir));
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(parent) = exe_path.parent() {
-            dirs.push(parent.to_path_buf());
+    dirs.extend(
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf)),
+    );
+    dirs.into_iter().fold(Vec::new(), |mut unique, dir| {
+        if !unique.contains(&dir) {
+            unique.push(dir);
         }
-    }
-
-    let mut unique = Vec::new();
-    for dir in dirs {
-        if unique.iter().any(|candidate: &PathBuf| candidate == &dir) {
-            continue;
-        }
-        unique.push(dir);
-    }
-
-    unique
+        unique
+    })
 }
 
 fn is_executable_file(path: &Path) -> bool {

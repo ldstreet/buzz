@@ -1,3 +1,7 @@
+// Deep async call chains (mesh ensure→download→start under Tauri command
+// futures) exceed the default query depth when computing layouts.
+#![recursion_limit = "256"]
+
 mod app_state;
 mod archive;
 mod commands;
@@ -154,6 +158,34 @@ fn toggle_maximize(window: &tauri::Window) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // mesh-llm's async chains (model download, node start/join) overflow
+    // tokio's default 2 MiB worker stacks — a stack-guard SIGABRT, not a
+    // panic. Upstream mesh-llm and mesh-console both run on 8 MiB worker
+    // stacks for this reason; give Tauri's command runtime the same headroom
+    // before anything else touches tauri::async_runtime.
+    #[cfg(feature = "mesh-llm")]
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(crate::mesh_llm::MESH_WORKER_STACK_SIZE)
+        .build()
+    {
+        Ok(runtime) => {
+            tauri::async_runtime::set(runtime.handle().clone());
+            // Keep the runtime alive for the process lifetime; dropping it
+            // would shut down the workers Tauri now depends on.
+            std::mem::forget(runtime);
+            eprintln!(
+                "buzz-mesh: installed tokio runtime with {} MiB worker stacks",
+                crate::mesh_llm::MESH_WORKER_STACK_SIZE / (1024 * 1024)
+            );
+        }
+        Err(error) => {
+            // Fall back to Tauri's default runtime: the app still works,
+            // only deep mesh-llm futures are at risk of stack overflow.
+            eprintln!("buzz-mesh: failed to build big-stack tokio runtime, using default: {error}");
+        }
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Focus the existing window when a duplicate instance launches.
@@ -356,6 +388,9 @@ pub fn run() {
             // closes the cold-launch hole-punch race.
             #[cfg(feature = "mesh-llm")]
             {
+                // Route mesh-llm's download progress (model weights, runtime)
+                // onto Tauri events so the UI can render real progress.
+                crate::mesh_llm::install_progress_sink(&app_handle);
                 let mesh_app = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     crate::mesh_llm::spawn_listener(mesh_app).await;
@@ -467,6 +502,15 @@ pub fn run() {
             // under an ephemeral owner key.
             if restore_agents && !recovery_mode {
                 tauri::async_runtime::spawn(async move {
+                    #[cfg(feature = "mesh-llm")]
+                    {
+                        let state = app_handle.state::<AppState>();
+                        if let Err(error) =
+                            commands::mesh_llm::restore_mesh_sharing(&app_handle, &state).await
+                        {
+                            eprintln!("buzz-desktop: failed to restore Share Compute: {error}");
+                        }
+                    }
                     if let Err(error) =
                         restore_managed_agents_on_launch(&app_handle, shutdown_started.as_ref())
                             .await
@@ -656,13 +700,12 @@ pub fn run() {
             mesh_availability,
             mesh_start_node,
             mesh_ensure_client_node,
-            mesh_prepare_relay_mesh_client,
             mesh_dial_endpoint_addr,
             mesh_status_report_payload,
             mesh_stop_node,
             mesh_node_status,
             mesh_installed_models,
-            mesh_agent_preset,
+            mesh_model_catalog,
             update_managed_agent,
             discover_backend_providers,
             probe_backend_provider,

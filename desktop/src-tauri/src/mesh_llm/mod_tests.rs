@@ -34,33 +34,108 @@ fn model_ref_is_family_agnostic() {
 }
 
 #[test]
-fn agent_preset_runs_on_buzz_agent_not_goose() {
-    // Regression (Tyler): the relay-mesh preset used to hand the agent the
-    // global default runtime (goose), which ignores the OpenAI-compat env
-    // vars and falls back to its own provider. Mesh agents must run on
-    // buzz-agent, which reads those vars.
-    let preset = super::agent_preset(super::MeshAgentPresetRequest {
-        model_id: "Qwen3-8B-Q4_K_M".to_string(),
-    })
-    .expect("preset for a valid model id");
-
-    assert_eq!(preset.agent_command, "buzz-agent");
-    assert_ne!(preset.agent_command, "goose");
-    assert_eq!(preset.mcp_command, "buzz-dev-mcp");
-
-    // The env vars buzz-agent's config layer reads (crates/buzz-agent).
+fn iroh_relay_mode_defaults_to_enabled() {
+    // Default is ON: unset, empty, "1", and "default" all enable the SDK's
+    // default iroh relays, so members connect regardless of NAT. Relays are
+    // transport-only (ciphertext forwarding) — admission is a separate layer.
+    use super::IrohRelayMode;
+    assert_eq!(super::iroh_relay_mode_from(None), IrohRelayMode::Default);
     assert_eq!(
-        preset
-            .env_vars
-            .get("BUZZ_AGENT_PROVIDER")
-            .map(String::as_str),
-        Some("openai")
+        super::iroh_relay_mode_from(Some("")),
+        IrohRelayMode::Default
     );
     assert_eq!(
-        preset
-            .env_vars
-            .get("OPENAI_COMPAT_MODEL")
-            .map(String::as_str),
-        Some("Qwen3-8B-Q4_K_M")
+        super::iroh_relay_mode_from(Some("  ")),
+        IrohRelayMode::Default
     );
+    assert_eq!(
+        super::iroh_relay_mode_from(Some("1")),
+        IrohRelayMode::Default
+    );
+    assert_eq!(
+        super::iroh_relay_mode_from(Some("default")),
+        IrohRelayMode::Default
+    );
+}
+
+#[test]
+fn iroh_relay_mode_opt_out_and_custom() {
+    use super::IrohRelayMode;
+    // "0" is the explicit opt-out for metadata-conscious deployments.
+    assert_eq!(
+        super::iroh_relay_mode_from(Some("0")),
+        IrohRelayMode::Disabled
+    );
+    // Anything else is a comma-separated custom relay list.
+    assert_eq!(
+        super::iroh_relay_mode_from(Some("https://relay1.example, https://relay2.example ,")),
+        IrohRelayMode::Custom(vec![
+            "https://relay1.example".to_string(),
+            "https://relay2.example".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn normalized_roster_none_means_no_enforcement() {
+    let identity = super::identity::OwnerIdentity {
+        keystore_path: std::path::PathBuf::from("/tmp/ks.json"),
+        owner_id: "owner-self".to_string(),
+    };
+    assert_eq!(super::normalized_roster(&None, &identity), None);
+}
+
+#[test]
+fn normalized_roster_always_includes_self_and_dedupes() {
+    let identity = super::identity::OwnerIdentity {
+        keystore_path: std::path::PathBuf::from("/tmp/ks.json"),
+        owner_id: "owner-self".to_string(),
+    };
+    // Empty roster (fresh relay, nobody published yet) still admits self —
+    // otherwise the first sharer locks themselves out.
+    assert_eq!(
+        super::normalized_roster(&Some(vec![]), &identity),
+        Some(vec!["owner-self".to_string()])
+    );
+    // Dedup + trim + sorted, self merged in.
+    assert_eq!(
+        super::normalized_roster(
+            &Some(vec![
+                "owner-b".to_string(),
+                " owner-a ".to_string(),
+                "owner-b".to_string(),
+                "".to_string(),
+                "owner-self".to_string(),
+            ]),
+            &identity
+        ),
+        Some(vec![
+            "owner-a".to_string(),
+            "owner-b".to_string(),
+            "owner-self".to_string(),
+        ])
+    );
+}
+
+fn signed_status_event(content: serde_json::Value) -> nostr::Event {
+    let keys = nostr::Keys::generate();
+    nostr::EventBuilder::new(nostr::Kind::Custom(30_621), content.to_string())
+        .sign_with_keys(&keys)
+        .expect("test event signs")
+}
+
+#[test]
+fn owner_ids_from_events_collects_sorted_deduped_roster() {
+    let events = vec![
+        signed_status_event(json!({ "ownerId": "owner-b", "serveTargets": [] })),
+        signed_status_event(json!({ "owner_id": "owner-a" })), // snake_case accepted
+        signed_status_event(json!({ "ownerId": "owner-b" })),  // duplicate
+        signed_status_event(json!({ "serveTargets": [] })),    // pre-upgrade note: no owner id
+        signed_status_event(json!({ "ownerId": "" })),         // empty filtered
+    ];
+    assert_eq!(
+        super::owner_ids_from_events(&events),
+        vec!["owner-a".to_string(), "owner-b".to_string()]
+    );
+    assert_eq!(super::owner_ids_from_events(&[]), Vec::<String>::new());
 }

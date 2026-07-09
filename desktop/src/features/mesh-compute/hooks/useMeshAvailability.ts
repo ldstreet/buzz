@@ -5,7 +5,7 @@ import type { MeshAvailability } from "@/shared/api/tauriMesh";
 
 /**
  * Polls `mesh_availability` at a slow cadence — this drives the Settings
- * client-mode tile AND the Create-Agent "Relay mesh" flow gate. Both consumers
+ * client-mode tile AND the Create-Agent "Buzz shared compute" flow gate. Both consumers
  * tolerate up-to-5-second staleness; we re-fetch on focus to keep transitions
  * (member added/removed, serve node started/stopped) feeling live.
  *

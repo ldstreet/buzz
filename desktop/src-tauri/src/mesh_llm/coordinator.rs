@@ -44,6 +44,11 @@ const CALL_ME_NOW_TTL: Duration = Duration::from_secs(60);
 /// publish is flaky by construction even when both ends are correct.
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Cadence for the roster watcher. Membership changes are rare; a slow poll
+/// keeps relay load negligible while bounding how long an ex-member's owner
+/// id stays admitted (one poll interval + node restart).
+const ROSTER_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Handle to the runtime-owned mesh control plane. Stored on [`AppState`].
 pub struct MeshCoordinator {
     /// `true` once the call-me-now listener holds a live, authenticated
@@ -53,6 +58,7 @@ pub struct MeshCoordinator {
     listener_active: watch::Receiver<bool>,
     _listener: tokio::task::JoinHandle<()>,
     _status_publisher: tokio::task::JoinHandle<()>,
+    _roster_watcher: tokio::task::JoinHandle<()>,
 }
 
 impl MeshCoordinator {
@@ -113,6 +119,10 @@ pub async fn spawn_listener(app: AppHandle) {
     let publisher = tokio::spawn(async move {
         status_publisher_loop(publisher_app).await;
     });
+    let roster_app = app.clone();
+    let roster_watcher = tokio::spawn(async move {
+        roster_watcher_loop(roster_app).await;
+    });
     let state = app.state::<AppState>();
     let mut guard = state.mesh_coordinator.lock().await;
     if guard.is_none() {
@@ -120,12 +130,93 @@ pub async fn spawn_listener(app: AppHandle) {
             listener_active: active_rx,
             _listener: listener,
             _status_publisher: publisher,
+            _roster_watcher: roster_watcher,
         });
     } else {
         // Lost a race: another caller installed a coordinator first. Drop ours.
         listener.abort();
         publisher.abort();
+        roster_watcher.abort();
     }
+}
+
+/// Watch the member roster and restart the mesh node when it drifts.
+///
+/// The SDK's trust store is fixed at node start, so an allowlist change
+/// (member joined or left the Buzz server) only takes effect through a node
+/// restart. The watcher polls the relay-signed status notes, compares the
+/// owner-id roster against the one the running node was started with, and on
+/// drift restarts the node with the fresh roster (same mode/model/limits).
+/// Nodes running without a roster (`trusted_owner_ids: None`) are left alone.
+async fn roster_watcher_loop(app: AppHandle) {
+    loop {
+        tokio::time::sleep(ROSTER_POLL_INTERVAL).await;
+        let state = app.state::<AppState>();
+        if let Err(error) = reconcile_roster(&state).await {
+            eprintln!("buzz-mesh: roster reconcile failed: {error}");
+        }
+    }
+}
+
+async fn reconcile_roster(state: &AppState) -> Result<(), String> {
+    // Snapshot the running node's request without holding the lock across
+    // the relay query.
+    let current_request = {
+        let runtime = state.mesh_llm_runtime.lock().await;
+        match runtime.as_ref() {
+            Some(runtime) => runtime.start_request().clone(),
+            None => return Ok(()),
+        }
+    };
+    // Only enforce drift on nodes that were started with a roster.
+    if current_request.trusted_owner_ids.is_none() {
+        return Ok(());
+    }
+
+    let fresh = match crate::commands::mesh_llm::resolve_trusted_owner_ids(state).await {
+        Some(ids) => ids,
+        // Relay unreachable: keep the node as-is rather than churning it
+        // during an outage.
+        None => return Ok(()),
+    };
+    if Some(&fresh) == current_request.trusted_owner_ids.as_ref() {
+        return Ok(());
+    }
+
+    // Roster drifted: restart the node with the fresh roster. Take the
+    // runtime out under the lock, stop it, start the replacement, put it
+    // back. A concurrent stop/start while we're mid-restart loses the node
+    // it installed — acceptable: both paths converge on the fresh roster at
+    // the next poll.
+    let mut request = current_request;
+    request.trusted_owner_ids = Some(fresh);
+    let mut guard = state.mesh_llm_runtime.lock().await;
+    let Some(running) = guard.take() else {
+        return Ok(());
+    };
+    // Re-check under the lock: the node may have been swapped while we
+    // queried. Restart only if the node we now hold still differs from the
+    // fresh roster (a replacement started with the fresh roster passes
+    // through untouched).
+    if running.start_request().trusted_owner_ids != request.trusted_owner_ids {
+        eprintln!(
+            "buzz-mesh: membership roster changed; restarting mesh node with fresh allowlist"
+        );
+        if let Err(error) = running.stop().await {
+            eprintln!("buzz-mesh: stopping mesh node for roster restart failed: {error}");
+        }
+        match crate::mesh_llm::DesktopMeshRuntime::start(request).await {
+            Ok(replacement) => *guard = Some(replacement),
+            Err(error) => {
+                return Err(format!(
+                    "mesh node restart after roster change failed; node left stopped: {error}"
+                ));
+            }
+        }
+    } else {
+        *guard = Some(running);
+    }
+    Ok(())
 }
 
 async fn status_publisher_loop(app: AppHandle) {
