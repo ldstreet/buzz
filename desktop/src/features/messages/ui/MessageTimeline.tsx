@@ -29,7 +29,6 @@ export type MessageTimelineHandle = {
 };
 
 type MessageTimelineProps = {
-  agentPubkeys?: ReadonlySet<string>;
   channelId?: string | null;
   channelIntro?: ChannelIntro | null;
   channelName?: string;
@@ -141,7 +140,6 @@ const MessageTimelineBase = React.forwardRef<
   MessageTimelineProps
 >(function MessageTimeline(
   {
-    agentPubkeys,
     channelId,
     channelIntro = null,
     directMessageIntro = null,
@@ -581,7 +579,6 @@ const MessageTimelineBase = React.forwardRef<
                 >
                   <TimelineMessageList
                     key={scrollContainerDomKey}
-                    agentPubkeys={agentPubkeys}
                     channelId={channelId}
                     channelName={channelName}
                     channelType={channelType}
