@@ -48,6 +48,20 @@ test("Buzz shared compute fallback is Default auto while normal providers remain
   assert.equal(openai.showCustomInput, true);
 });
 
+test("Buzz shared compute keeps Default auto when discovery is empty", () => {
+  const state = relayMeshModelPickerState({
+    discoveredOptions: [],
+    fallbackOptions: fallback,
+    isCustomEditing: false,
+    model: "auto",
+    provider: "relay-mesh",
+  });
+
+  assert.deepEqual(state.options, [{ id: "", label: "Default (auto)" }]);
+  assert.equal(state.selectValue, AUTO_MODEL_DROPDOWN_VALUE);
+  assert.equal(state.showCustomInput, false);
+});
+
 test("Buzz shared compute dropdown contains Default plus live models and no custom escape hatch", () => {
   const options = modelDropdownOptions({
     options: live,

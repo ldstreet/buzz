@@ -7,7 +7,9 @@ pub(crate) use coordinator::{
 pub use coordinator::{spawn_listener, start_client, MeshCoordinator};
 
 mod discovery;
-pub use discovery::{availability_from_events, mesh_status_filter, owner_ids_from_events};
+pub use discovery::{
+    availability_from_events, mesh_status_filter, owner_ids_from_events, relay_membership_filter,
+};
 use discovery::{device_name_from_status, endpoint_id_from_status, enrich_status_payload_identity};
 
 mod catalog;

@@ -36,9 +36,12 @@ pub fn apply_relay_mesh_env(
         RELAY_MESH_API_KEY_PLACEHOLDER.to_string(),
     );
     env.insert("OPENAI_COMPAT_API".to_string(), "chat".to_string());
+    // Keep the combined prompt + response budget within small shared models.
+    // The router reserves roughly 25% headroom, so 4K output can reject an 8K
+    // model before the first turn once ACP/MCP context is included.
     env.insert(
         "BUZZ_AGENT_MAX_OUTPUT_TOKENS".to_string(),
-        "4096".to_string(),
+        "1024".to_string(),
     );
 }
 
@@ -101,7 +104,7 @@ fn relay_mesh_model_id_from_env(record: &ManagedAgentRecord) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mesh-llm"))]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -165,7 +168,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "mesh-llm")]
     #[test]
     fn relay_mesh_model_id_detects_mesh_preset_env() {
         let mut rec = fixture();
@@ -185,7 +187,21 @@ mod tests {
         assert_eq!(relay_mesh_model_id(&rec).as_deref(), Some("Qwen3"));
     }
 
-    #[cfg(feature = "mesh-llm")]
+    #[test]
+    fn native_provider_uses_a_small_model_safe_output_budget() {
+        let mut rec = fixture();
+        rec.provider = Some(RELAY_MESH_PROVIDER_ID.to_string());
+        rec.model = Some(RELAY_MESH_AUTO_MODEL_ID.to_string());
+        let mut env = BTreeMap::new();
+
+        apply_relay_mesh_env(&mut env, &rec);
+
+        assert_eq!(
+            env.get("BUZZ_AGENT_MAX_OUTPUT_TOKENS").map(String::as_str),
+            Some("1024")
+        );
+    }
+
     #[test]
     fn relay_mesh_model_id_ignores_non_mesh_openai_env() {
         let mut rec = fixture();
@@ -201,7 +217,6 @@ mod tests {
         assert_eq!(relay_mesh_model_id(&rec), None);
     }
 
-    #[cfg(feature = "mesh-llm")]
     #[test]
     fn relay_mesh_model_id_ignores_user_openai_on_same_local_port() {
         let mut rec = fixture();
@@ -218,7 +233,6 @@ mod tests {
         assert_eq!(relay_mesh_model_id(&rec), None);
     }
 
-    #[cfg(feature = "mesh-llm")]
     #[test]
     fn native_provider_fields_are_authoritative() {
         // The whole point: a typed record needs no env-var sniffing to be
@@ -236,7 +250,6 @@ mod tests {
         assert_eq!(relay_mesh_model_id(&rec).as_deref(), Some("Qwen3"));
     }
 
-    #[cfg(feature = "mesh-llm")]
     #[test]
     fn native_provider_fields_win_over_legacy_config() {
         let mut rec = fixture();
@@ -260,7 +273,6 @@ mod tests {
         assert_eq!(relay_mesh_model_id(&rec).as_deref(), Some("native-model"));
     }
 
-    #[cfg(feature = "mesh-llm")]
     #[test]
     fn legacy_record_falls_back_to_env_sniff() {
         // Records saved before the typed field still resolve via env vars.

@@ -8641,6 +8641,16 @@ export function maybeInstallE2eTauriMocks() {
             description: null,
           },
         ];
+        if (provider === "relay-mesh") {
+          if (!mockMeshState.admitted) {
+            throw new Error(mockMeshState.denyReason);
+          }
+          if (mockMeshState.models.length === 0) {
+            throw new Error(
+              "no Buzz shared compute serving members are available",
+            );
+          }
+        }
         const models =
           provider === "relay-mesh"
             ? mockMeshState.models.map((model) => ({

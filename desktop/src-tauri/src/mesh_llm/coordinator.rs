@@ -241,6 +241,9 @@ pub(crate) async fn publish_stopped_status_once(app: &AppHandle, reason: &str) {
 }
 
 async fn publish_current_status_for_state(state: &AppState) -> Result<(), String> {
+    let owner_id = super::ensure_owner_identity()
+        .map_err(|error| format!("failed to load mesh owner identity: {error}"))?
+        .owner_id;
     let payload = {
         let runtime = state.mesh_llm_runtime.lock().await;
         match runtime.as_ref() {
@@ -248,18 +251,22 @@ async fn publish_current_status_for_state(state: &AppState) -> Result<(), String
                 .status_report_payload()
                 .await
                 .map_err(|error| error.to_string())?,
-            None => return Ok(()),
+            None => stopped_status_payload(&owner_id),
         }
     };
     publish_status_report(state, payload).await
 }
 
 async fn publish_stopped_status_for_state(state: &AppState) -> Result<(), String> {
-    publish_status_report(state, stopped_status_payload()).await
+    let owner_id = super::ensure_owner_identity()
+        .map_err(|error| format!("failed to load mesh owner identity: {error}"))?
+        .owner_id;
+    publish_status_report(state, stopped_status_payload(&owner_id)).await
 }
 
-fn stopped_status_payload() -> serde_json::Value {
+fn stopped_status_payload(owner_id: &str) -> serde_json::Value {
     serde_json::json!({
+        "ownerId": owner_id,
         "token": "",
         "hosted_models": [],
         "serving_models": [],
@@ -587,10 +594,11 @@ mod tests {
     }
 
     #[test]
-    fn stopped_status_payload_withdraws_all_targets() {
+    fn stopped_status_payload_advertises_identity_without_targets() {
         assert_eq!(
-            stopped_status_payload(),
+            stopped_status_payload("owner-test"),
             json!({
+                "ownerId": "owner-test",
                 "token": "",
                 "hosted_models": [],
                 "serving_models": [],

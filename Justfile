@@ -254,14 +254,31 @@ test-integration:
 # Buzz shared compute e2e: CI-safe signaling invariants + Playwright UI
 mesh-e2e:
     cargo test -p buzz-relay mesh_signaling
-    cd {{desktop_dir}} && pnpm test:e2e:integration -- mesh-compute.spec.ts
+    cd {{desktop_dir}} && pnpm test:e2e:smoke -- mesh-compute.spec.ts
 
-# Mesh-compute Layer 1: REAL serve->client->inference on this machine (not CI)
+# Real serve->client->inference on this machine (not CI).
 mesh-e2e-hardware:
     #!/usr/bin/env bash
     set -euo pipefail
     export MESH_LLM_NATIVE_RUNTIME_CACHE_DIR="$(./scripts/ensure-mesh-native-runtime.sh)"
     cargo run -p buzz-relay --example mesh_serve_client_smoke
+
+# Three isolated node processes: trusted member joins and infers; stranger is rejected.
+# Uses temp homes and explicit mesh owner keystores. Never reads the Buzz Keychain.
+mesh-e2e-admission:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export MESH_LLM_NATIVE_RUNTIME_CACHE_DIR="$(./scripts/ensure-mesh-native-runtime.sh)"
+    cargo run -p buzz-relay --example mesh_admission_smoke
+
+# Full hardware confidence suite: routing, owner admission, and real agent inference.
+mesh-e2e-confidence:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export MESH_LLM_NATIVE_RUNTIME_CACHE_DIR="$(./scripts/ensure-mesh-native-runtime.sh)"
+    cargo run -p buzz-relay --example mesh_serve_client_smoke
+    cargo run -p buzz-relay --example mesh_admission_smoke
+    cargo run -p buzz-relay --example mesh_agent_e2e
 
 # Take desktop screenshots using the mock bridge
 desktop-screenshot *ARGS:

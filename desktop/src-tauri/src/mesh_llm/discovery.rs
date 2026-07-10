@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
@@ -14,27 +14,64 @@ fn dedupe_targets(targets: Vec<MeshServeTarget>) -> Vec<MeshServeTarget> {
     by_endpoint.into_values().collect()
 }
 
-/// Collect the mesh owner ids published in relay-signed status notes. This is
-/// the admission roster: serve nodes allowlist exactly these owners. On a
-/// membership-enforcing relay only members can get a note published, so the
-/// roster is the member set; on an open relay it degrades to "anyone who
-/// published", matching that relay's (non-)gating everywhere else.
+/// Resolve the mesh admission roster from relay status and membership events.
+///
+/// When a NIP-43 membership list exists, only status notes attributed to a
+/// currently listed direct member contribute an owner id. This removes stale
+/// notes from former members and ignores notes from nonmembers. Relays without
+/// a membership list retain the legacy/open-relay behavior: every published
+/// owner id is admitted.
 pub fn owner_ids_from_events(events: &[nostr::Event]) -> Vec<String> {
+    let members = latest_membership_list(events);
     let mut ids: Vec<String> = events
         .iter()
-        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event.content).ok())
-        .filter_map(|content| {
-            content
-                .get("ownerId")
-                .or_else(|| content.get("owner_id"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
+        .filter(|event| event.kind.as_u16() as u64 == MESH_STATUS_KIND)
+        .filter(|event| {
+            members.as_ref().is_none_or(|members| {
+                reporter_pubkey_from_status_event(event)
+                    .is_some_and(|reporter| members.contains(&reporter.to_ascii_lowercase()))
+            })
         })
-        .filter(|id| !id.is_empty())
+        .filter_map(owner_id_from_status_event)
         .collect();
     ids.sort();
     ids.dedup();
     ids
+}
+
+fn latest_membership_list(events: &[nostr::Event]) -> Option<BTreeSet<String>> {
+    events
+        .iter()
+        .filter(|event| event.kind.as_u16() == 13_534)
+        .max_by_key(|event| event.created_at)
+        .map(|event| {
+            event
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    let slice = tag.as_slice();
+                    let name = slice.first()?;
+                    if name != "member" && name != "p" {
+                        return None;
+                    }
+                    slice
+                        .get(1)
+                        .map(|pubkey| pubkey.trim().to_ascii_lowercase())
+                })
+                .filter(|pubkey| !pubkey.is_empty())
+                .collect()
+        })
+}
+
+fn owner_id_from_status_event(event: &nostr::Event) -> Option<String> {
+    let content = serde_json::from_str::<serde_json::Value>(&event.content).ok()?;
+    content
+        .get("ownerId")
+        .or_else(|| content.get("owner_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
 }
 
 pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
@@ -127,6 +164,13 @@ pub fn mesh_status_filter() -> serde_json::Value {
         "kinds": [MESH_STATUS_KIND],
         "#k": ["buzz-mesh-status"],
         "limit": 100
+    })
+}
+
+pub fn relay_membership_filter() -> serde_json::Value {
+    serde_json::json!({
+        "kinds": [13534],
+        "limit": 1
     })
 }
 

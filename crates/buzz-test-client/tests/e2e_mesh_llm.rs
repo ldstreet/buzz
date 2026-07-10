@@ -11,7 +11,7 @@
 //! # Running (manual / runbook)
 //!
 //! ```text
-//! # 1. one-time local llama build (see docs/mesh-llm-local-build.md)
+//! # 1. prepare the matching native runtime with `scripts/ensure-mesh-native-runtime.sh`
 //! # 2. start a mesh-enabled relay
 //! BUZZ_MESH_ENABLED=true BUZZ_REQUIRE_RELAY_MEMBERSHIP=true \
 //!   cargo run -p buzz-relay

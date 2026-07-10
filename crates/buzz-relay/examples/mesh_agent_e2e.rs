@@ -8,7 +8,7 @@
 //!   P2 auto-model chat      — agent sends `model: "auto"`; mesh router picks.
 //!   P3 context-fit regression — an oversized output budget (150k tokens)
 //!      must FAIL with the router's context error (proves the router's fit
-//!      gate — the failure mode the 4096 preset cap protects against).
+//!      gate — the failure mode the 1024 preset cap protects against).
 //!   P4 agentic tool use     — agent + buzz-dev-mcp writes a file on disk.
 //!
 //! The serve node is the same `mesh_llm_sdk::serve` path Share-compute uses
@@ -98,7 +98,7 @@ async fn run() -> anyhow::Result<()> {
     let r = agent_chat(
         &base,
         &served_id,
-        "4096",
+        "1024",
         "Reply with exactly one word: PONG",
         &[],
     )
@@ -116,7 +116,7 @@ async fn run() -> anyhow::Result<()> {
     let r = agent_chat(
         &base,
         "auto",
-        "4096",
+        "1024",
         "Reply with exactly one word: PONG",
         &[],
     )
@@ -160,15 +160,16 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    // P4: agentic tool use via buzz-dev-mcp — write a real file.
-    let marker = std::env::temp_dir().join(format!("mesh-e2e-{}.txt", std::process::id()));
-    let _ = std::fs::remove_file(&marker);
+    // P4: agentic tool use via buzz-dev-mcp — write a real file inside the
+    // isolated ACP working directory. The MCP sandbox intentionally rejects
+    // nonexistent absolute paths outside that root.
+    let marker_name = format!("mesh-e2e-{}.txt", std::process::id());
     let prompt = format!(
-        "Use your developer tools to create a file at {} containing exactly the text BUZZ_OK (no quotes, no newline commentary). Then confirm.",
-        marker.display()
+        "Use your developer tools to create {marker_name} in the current working directory containing exactly the text BUZZ_OK (no quotes, no newline commentary). Then confirm."
     );
     let mcp = vec![("dev".to_string(), repo_bin("buzz-dev-mcp")?)];
-    let r = agent_chat(&base, &served_id, "4096", &prompt, &mcp).await;
+    let (r, marker) =
+        agent_chat_with_marker(&base, &served_id, "1024", &prompt, &mcp, &marker_name).await;
     let file_ok = std::fs::read_to_string(&marker)
         .map(|c| c.contains("BUZZ_OK"))
         .unwrap_or(false);
@@ -215,12 +216,42 @@ async fn agent_chat(
     prompt: &str,
     mcp_servers: &[(String, String)],
 ) -> anyhow::Result<String> {
-    let agent = repo_bin("buzz-agent")?;
+    let (result, _) =
+        agent_chat_in_isolated_home(base, model, max_output_tokens, prompt, mcp_servers).await;
+    result
+}
+
+async fn agent_chat_with_marker(
+    base: &str,
+    model: &str,
+    max_output_tokens: &str,
+    prompt: &str,
+    mcp_servers: &[(String, String)],
+    marker_name: &str,
+) -> (anyhow::Result<String>, std::path::PathBuf) {
+    let (result, home) =
+        agent_chat_in_isolated_home(base, model, max_output_tokens, prompt, mcp_servers).await;
+    (result, home.join(marker_name))
+}
+
+async fn agent_chat_in_isolated_home(
+    base: &str,
+    model: &str,
+    max_output_tokens: &str,
+    prompt: &str,
+    mcp_servers: &[(String, String)],
+) -> (anyhow::Result<String>, std::path::PathBuf) {
+    let agent = match repo_bin("buzz-agent") {
+        Ok(agent) => agent,
+        Err(error) => return (Err(error), std::path::PathBuf::new()),
+    };
     // Isolated HOME: no skills, no AGENTS.md chain, no keychain, tiny prompt.
     let home = std::env::temp_dir().join(format!("mesh-e2e-home-{}", std::process::id()));
-    std::fs::create_dir_all(&home)?;
+    if let Err(error) = std::fs::create_dir_all(&home) {
+        return (Err(error.into()), home);
+    }
 
-    let mut child = Command::new(&agent)
+    let mut child = match Command::new(&agent)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", &home)
@@ -235,11 +266,15 @@ async fn agent_chat(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return (Err(error.into()), home),
+    };
 
     let result = drive_acp(&mut child, prompt, mcp_servers, &home).await;
     let _ = child.kill().await;
-    result
+    (result, home)
 }
 
 async fn drive_acp(

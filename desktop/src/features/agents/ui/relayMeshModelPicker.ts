@@ -7,6 +7,13 @@ import {
   type PersonaModelOption,
 } from "./personaDialogPickers";
 
+function withSharedComputeAutoOption(
+  options: readonly PersonaModelOption[],
+): readonly PersonaModelOption[] {
+  const modelOptions = options.filter((option) => option.id.trim() !== "");
+  return [{ id: "", label: "Default (auto)" }, ...modelOptions];
+}
+
 export function relayMeshModelPickerState({
   discoveredOptions,
   fallbackOptions,
@@ -26,20 +33,20 @@ export function relayMeshModelPickerState({
 }) {
   const isRelayMesh = provider.trim() === "relay-mesh";
   const trimmedModel = model.trim();
-  const options =
-    discoveredOptions ??
-    (isRelayMesh ? [{ id: "", label: "Default (auto)" }] : fallbackOptions);
-  const isCustom =
-    !(isRelayMesh && trimmedModel === "auto") &&
-    !hasPersonaModelOption(knownOptions ?? options, model);
-  const selectValue =
-    isRelayMesh && trimmedModel === "auto"
+  const options = isRelayMesh
+    ? withSharedComputeAutoOption(discoveredOptions ?? [])
+    : (discoveredOptions ?? fallbackOptions);
+  const isKnownModel = hasPersonaModelOption(knownOptions ?? options, model);
+  const isCustom = !isRelayMesh && !isKnownModel;
+  const selectValue = isRelayMesh
+    ? trimmedModel === "auto" || !isKnownModel
       ? AUTO_MODEL_DROPDOWN_VALUE
-      : getModelSelectValue({
-          isCustomModelEditing: isCustomEditing,
-          isModelCustom: isCustom,
-          model,
-        });
+      : trimmedModel || AUTO_MODEL_DROPDOWN_VALUE
+    : getModelSelectValue({
+        isCustomModelEditing: isCustomEditing,
+        isModelCustom: isCustom,
+        model,
+      });
   return {
     isCustom,
     isRelayMesh,

@@ -47,14 +47,17 @@ const RELAY_MESH_RUNTIME_NO_TARGET: &str =
 
 pub type CmdResult<T> = Result<T, String>;
 
-/// Resolve the admission roster: mesh owner ids from the relay-signed status
-/// notes (kind:30621). Only members get notes published on a
-/// membership-enforcing relay, so this is the member set. Returns `None`
-/// when the relay can't be queried — callers then start the node without
-/// allowlist enforcement rather than locking out a working mesh because of a
-/// transient relay outage (discovery already failed in that case anyway).
+/// Resolve the admission roster by intersecting relay-signed mesh status
+/// reporters with the current NIP-43 direct-member list. Relays that publish no
+/// membership list retain status-only backcompat. Returns `None` when the
+/// combined query fails, so a transient outage does not lock out a working
+/// mesh.
 pub(crate) async fn resolve_trusted_owner_ids(state: &AppState) -> Option<Vec<String>> {
-    match relay::query_relay(state, &[mesh_llm::mesh_status_filter()]).await {
+    let filters = [
+        mesh_llm::mesh_status_filter(),
+        mesh_llm::relay_membership_filter(),
+    ];
+    match relay::query_relay(state, &filters).await {
         Ok(events) => Some(mesh_llm::owner_ids_from_events(&events)),
         Err(error) => {
             eprintln!("buzz-mesh: roster query failed; starting without allowlist: {error}");
@@ -412,9 +415,10 @@ pub(crate) async fn ensure_relay_mesh_for_record(
     let target = match resolve_mesh_bootstrap_target(&state, &model_id).await {
         Ok(Some(target)) => target,
         Ok(None) => {
-            return Err(format!(
+            return Err(
                 "Buzz shared compute cannot start because no live member is serving this model. Start serving it on a member, then try again."
-            ));
+                    .to_string(),
+            );
         }
         Err(error) => {
             return Err(format!(

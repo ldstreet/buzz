@@ -79,6 +79,9 @@ export function MeshComputeSettingsCard() {
   );
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [actionInFlight, setActionInFlight] = React.useState(false);
+  const [pendingAction, setPendingAction] = React.useState<
+    "start" | "stop" | null
+  >(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const { progress: downloadProgress, reset: resetDownloadProgress } =
     useMeshDownloadProgress();
@@ -106,8 +109,7 @@ export function MeshComputeSettingsCard() {
 
   // One-shot hardware-aware catalog fetch. Purely additive: when it fails
   // (stub build, survey error) the card falls back to the free-text field.
-  // When the field is empty, pre-fill the recommended model — a real value
-  // in the field, not ghost placeholder text pretending to be a suggestion.
+  // Keep an empty draft empty so the UI can explicitly ask the member to choose.
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -115,11 +117,6 @@ export function MeshComputeSettingsCard() {
         const value = await meshModelCatalog();
         if (cancelled) return;
         setCatalog(value);
-        setModelInput((current) => {
-          if (current !== "" || !value.recommended) return current;
-          writeDraft(MODEL_DRAFT_STORAGE_KEY, value.recommended);
-          return value.recommended;
-        });
       } catch {
         // Non-fatal — picker just doesn't render.
       }
@@ -149,6 +146,7 @@ export function MeshComputeSettingsCard() {
 
   async function handleToggle(next: boolean) {
     setActionError(null);
+    setPendingAction(next ? "start" : "stop");
     setActionInFlight(true);
     try {
       if (next) {
@@ -170,6 +168,7 @@ export function MeshComputeSettingsCard() {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionInFlight(false);
+      setPendingAction(null);
       resetDownloadProgress();
     }
   }
@@ -188,7 +187,7 @@ export function MeshComputeSettingsCard() {
 
       {error ? (
         <p className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          Couldn't load mesh status: {error}
+          Couldn't check shared compute: {error}
         </p>
       ) : null}
       {actionError ? (
@@ -209,7 +208,7 @@ export function MeshComputeSettingsCard() {
             >
               Share this machine
             </label>
-            <StatusLine status={status} />
+            <StatusLine pendingAction={pendingAction} status={status} />
           </div>
           <Switch
             checked={isOn}
@@ -243,11 +242,14 @@ export function MeshComputeSettingsCard() {
             />
             {refHint ? (
               <p className="text-sm font-normal text-muted-foreground">
-                {refHint}
+                {refHint}. If it is not installed, Buzz downloads it when
+                sharing starts.
               </p>
             ) : (
               <p className="text-sm font-normal text-muted-foreground">
-                Catalog name, HuggingFace ref, or a local file path.
+                Choose a suggested model below, or enter a catalog name,
+                HuggingFace ref, or local file. Buzz downloads remote models
+                when sharing starts.
               </p>
             )}
             {catalog && catalog.entries.length > 0 ? (
@@ -497,9 +499,21 @@ function CatalogPicker({
   );
 }
 
-function StatusLine({ status }: { status: MeshNodeStatus | null }) {
+function StatusLine({
+  pendingAction,
+  status,
+}: {
+  pendingAction: "start" | "stop" | null;
+  status: MeshNodeStatus | null;
+}) {
+  if (pendingAction === "start") {
+    return <p className="text-sm text-muted-foreground">Starting…</p>;
+  }
+  if (pendingAction === "stop") {
+    return <p className="text-sm text-muted-foreground">Stopping…</p>;
+  }
   if (!status) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return <p className="text-sm text-muted-foreground">Checking status…</p>;
   }
   const { state, health, modelId, modelName } = status;
   const modelLabel = modelName ?? modelId ?? "";
@@ -533,7 +547,7 @@ function StatusLine({ status }: { status: MeshNodeStatus | null }) {
     }
     return (
       <p className="text-sm text-muted-foreground">
-        Active{modelLabel ? ` — serving ${modelLabel}` : ""}.
+        Sharing{modelLabel ? ` ${modelLabel}` : ""} with relay members.
       </p>
     );
   }

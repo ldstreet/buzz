@@ -124,6 +124,32 @@ fn signed_status_event(content: serde_json::Value) -> nostr::Event {
         .expect("test event signs")
 }
 
+fn signed_reporter_status(reporter: &str, owner_id: &str) -> nostr::Event {
+    let keys = nostr::Keys::generate();
+    nostr::EventBuilder::new(
+        nostr::Kind::Custom(30_621),
+        json!({ "ownerId": owner_id, "serveTargets": [] }).to_string(),
+    )
+    .tag(
+        nostr::Tag::parse(["d", &format!("buzz-relay-mesh:{reporter}")])
+            .expect("valid reporter tag"),
+    )
+    .sign_with_keys(&keys)
+    .expect("test event signs")
+}
+
+fn signed_membership_event(members: &[String]) -> nostr::Event {
+    let keys = nostr::Keys::generate();
+    let tags = members
+        .iter()
+        .map(|member| nostr::Tag::parse(["member", member]).expect("valid member tag"))
+        .collect::<Vec<_>>();
+    nostr::EventBuilder::new(nostr::Kind::Custom(13_534), "")
+        .tags(tags)
+        .sign_with_keys(&keys)
+        .expect("test membership event signs")
+}
+
 #[test]
 fn owner_ids_from_events_collects_sorted_deduped_roster() {
     let events = vec![
@@ -138,4 +164,35 @@ fn owner_ids_from_events_collects_sorted_deduped_roster() {
         vec!["owner-a".to_string(), "owner-b".to_string()]
     );
     assert_eq!(super::owner_ids_from_events(&[]), Vec::<String>::new());
+}
+
+#[test]
+fn owner_roster_intersects_status_reporters_with_current_members() {
+    let current_member = "a".repeat(64);
+    let removed_member = "b".repeat(64);
+    let nonmember = "c".repeat(64);
+    let events = vec![
+        signed_reporter_status(&current_member, "owner-current"),
+        signed_reporter_status(&removed_member, "owner-removed"),
+        signed_reporter_status(&nonmember, "owner-nonmember"),
+        signed_membership_event(std::slice::from_ref(&current_member)),
+    ];
+
+    assert_eq!(
+        super::owner_ids_from_events(&events),
+        vec!["owner-current".to_string()]
+    );
+}
+
+#[test]
+fn owner_roster_without_membership_list_preserves_published_owners() {
+    let events = vec![
+        signed_reporter_status(&"a".repeat(64), "owner-a"),
+        signed_reporter_status(&"b".repeat(64), "owner-b"),
+    ];
+
+    assert_eq!(
+        super::owner_ids_from_events(&events),
+        vec!["owner-a".to_string(), "owner-b".to_string()]
+    );
 }
