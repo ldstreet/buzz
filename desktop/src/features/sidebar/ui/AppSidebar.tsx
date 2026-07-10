@@ -119,6 +119,7 @@ type AppSidebarProps = {
     templateId?: string;
   }) => Promise<void>;
   onOpenAddWorkspace: () => void;
+  onSendFeedback: () => void;
   onHideDm: (channelId: string) => void;
   onMarkChannelUnread: (channelId: string) => void;
   onMarkChannelRead: (
@@ -192,6 +193,7 @@ export function AppSidebar({
   onCreateChannel,
   onCreateForum,
   onOpenAddWorkspace,
+  onSendFeedback,
   onHideDm,
   onMarkChannelUnread,
   onMarkChannelRead,
@@ -842,6 +844,7 @@ export function AppSidebar({
                   isPresencePending={isPresencePending}
                   onOpenAddWorkspace={onOpenAddWorkspace}
                   onOpenSettings={onSelectSettings}
+                  onSendFeedback={onSendFeedback}
                   onRemoveWorkspace={onRemoveWorkspace}
                   onSetPresenceStatus={onSetPresenceStatus}
                   onSetUserStatus={onSetUserStatus}
