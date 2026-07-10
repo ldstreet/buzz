@@ -246,7 +246,10 @@ const overrides = new Map([
   // (reply-inclusive; would clear unread state early). The file was already
   // at the 1000 ceiling; comment-only overage, not code growth. Queued to
   // split with the rest of this list.
-  ["src/features/channels/ui/ChannelScreen.tsx", 1002],
+  // member-agent-flags: messageProfiles merge + ref stabilisation split out to
+  // useMessageProfiles.ts, ratcheting 1002 -> 972 (under the 1000 default;
+  // entry kept as a ratchet).
+  ["src/features/channels/ui/ChannelScreen.tsx", 972],
   // Shared UI was added to this guard after splitting globals/markdown so
   // large shared renderers cannot grow further while follow-up splits land.
   // +33 for config-nudge detect-and-render + author-auth gate (normalizePubkey guard).
