@@ -37,6 +37,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Cargo names the development profile `dev`, but writes its binaries under
+# target/debug. Accept `debug` as the user-facing spelling too.
+case "${CARGO_PROFILE}" in
+  dev|debug)
+    CARGO_BUILD_PROFILE="dev"
+    CARGO_TARGET_PROFILE="debug"
+    ;;
+  *)
+    CARGO_BUILD_PROFILE="${CARGO_PROFILE}"
+    CARGO_TARGET_PROFILE="${CARGO_PROFILE}"
+    ;;
+esac
+
 PROJECT="buzz-harness"
 COMPOSE_FILE="docker-compose.harness.yml"
 
@@ -94,6 +107,7 @@ log "Seeding community (host=${COMMUNITY_HOST}), channels, and members..."
 BUZZ_COMMUNITY_HOST="${COMMUNITY_HOST}" \
   BUZZ_DB_HOST=localhost BUZZ_DB_PORT=${PG_PORT} BUZZ_DB_USER=buzz \
   BUZZ_DB_PASS=buzz_dev BUZZ_DB_NAME=buzz \
+  BUZZ_DB_DOCKER_CONTAINER="${PROJECT}-postgres-1" \
   ./scripts/setup-desktop-test-data.sh
 ok "Community + channels + members seeded"
 
@@ -104,8 +118,8 @@ ok "Community + channels + members seeded"
 if [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
   export PATH="${HOME}/.cargo/bin:${PATH}"
 fi
-log "Building relay (profile=${CARGO_PROFILE}, cargo=$(command -v cargo), $(cargo --version))..."
-cargo build --profile "${CARGO_PROFILE}" -p buzz-relay
+log "Building relay (profile=${CARGO_BUILD_PROFILE}, cargo=$(command -v cargo), $(cargo --version))..."
+cargo build --profile "${CARGO_BUILD_PROFILE}" -p buzz-relay
 ok "Relay built"
 
 # ── Run relay (detached tmux session) ────────────────────────────────────────
@@ -130,7 +144,7 @@ tmux new-session -d -s "${TMUX_SESSION}" "cd '${REPO_ROOT}' && env \
   BUZZ_S3_BUCKET=buzz-media \
   BUZZ_REQUIRE_AUTH_TOKEN=false \
   BUZZ_RECONCILE_CHANNELS=true \
-  './target/${CARGO_PROFILE}/buzz-relay' > '${RELAY_LOG}' 2>&1"
+  './target/${CARGO_TARGET_PROFILE}/buzz-relay' > '${RELAY_LOG}' 2>&1"
 
 # Wait for the main port to accept connections.
 for _ in $(seq 1 30); do

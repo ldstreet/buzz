@@ -7,6 +7,7 @@ DB_PORT="${BUZZ_DB_PORT:-5432}"
 DB_USER="${BUZZ_DB_USER:-buzz}"
 DB_PASS="${BUZZ_DB_PASS:-buzz_dev}"
 DB_NAME="${BUZZ_DB_NAME:-buzz}"
+DB_DOCKER_CONTAINER="${BUZZ_DB_DOCKER_CONTAINER:-buzz-postgres}"
 
 SYSTEM_PUBKEY="0000000000000000000000000000000000000000000000000000000000000000"
 ALICE_PUBKEY="953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f"
@@ -17,9 +18,9 @@ AGENT_PUBKEY="db0b028cd36f4d3e36c8300cce87252c1f7fc9495ffecc53f393fcac341ffd36"
 
 if command -v psql >/dev/null 2>&1; then
   run_psql() { PGPASSWORD="$DB_PASS" psql -h"$DB_HOST" -p"$DB_PORT" -U"$DB_USER" -d"$DB_NAME" -qtA "$@"; }
-elif docker exec buzz-postgres psql --version >/dev/null 2>&1; then
+elif docker exec "$DB_DOCKER_CONTAINER" psql --version >/dev/null 2>&1; then
   run_psql() {
-    docker exec -e PGPASSWORD="$DB_PASS" buzz-postgres \
+    docker exec -e PGPASSWORD="$DB_PASS" "$DB_DOCKER_CONTAINER" \
       psql -U"$DB_USER" -d"$DB_NAME" -qtA "$@"
   }
 else
