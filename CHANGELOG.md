@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.1
+
+- fix(desktop): surface codex config-parse failures and -32603 internal errors clearly ([#1745](https://github.com/block/buzz/pull/1745)) ([`ec3762552`](https://github.com/block/buzz/commit/ec37625522ce1847e2684da2a477ca742255fbf1))
+- fix(desktop): fix workspace rail badge disappearance and persist mark-as-unread ([#1747](https://github.com/block/buzz/pull/1747)) ([`e8df6ba69`](https://github.com/block/buzz/commit/e8df6ba694703a26963524433e0e3a3f6ad252f1))
+- chore(desktop): remove container-only npm-preflight E2E harness ([#1749](https://github.com/block/buzz/pull/1749)) ([`9895b4d39`](https://github.com/block/buzz/commit/9895b4d390591a5adfc368bbc97f53989463c8ef))
+- fix(desktop): preflight npm prefix writability in doctor installs ([#1732](https://github.com/block/buzz/pull/1732)) ([`58aee8f91`](https://github.com/block/buzz/commit/58aee8f91394a97b68902f61a116696ed8ca3e1f))
+- fix(workspaces): exclude muted channels and unfollowed threads from rail unread badge ([#1738](https://github.com/block/buzz/pull/1738)) ([`ea1c75b0d`](https://github.com/block/buzz/commit/ea1c75b0d2bf954efe3816b303a9972e26ff893a))
+- feat(desktop): add explicit Edit avatar CTA in agent instance edit dialog ([#1736](https://github.com/block/buzz/pull/1736)) ([`26966aace`](https://github.com/block/buzz/commit/26966aacec1d8ca58ac5951818e55249e63506a3))
+- fix(observer): order system prompt below current-session divider on restart ([#1734](https://github.com/block/buzz/pull/1734)) ([`67a2d047e`](https://github.com/block/buzz/commit/67a2d047eb866dff3faae9f96b0a4f478e5e2a8b))
+
+
 ## v0.4.0
 
 - feat(desktop): default observer archive on for dev-nest builds ([#1726](https://github.com/block/buzz/pull/1726)) ([`d9e4edbbf`](https://github.com/block/buzz/commit/d9e4edbbf54996df22c59afdaaaaf571b4e3a5c6))
