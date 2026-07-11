@@ -254,6 +254,13 @@ pub(crate) async fn materialize_snapshot_bytes(
     if is_png {
         let png_bytes = encode_snapshot_png(&snapshot, avatar_bytes.as_deref())
             .map_err(|e| format!("Failed to encode .agent.png: {e}"))?;
+        if png_bytes.len() > MAX_SNAPSHOT_PNG_BYTES {
+            return Err(format!(
+                "Snapshot exceeds the {} MiB size limit for .agent.png files. \
+                 Reduce the avatar image size or use JSON format.",
+                MAX_SNAPSHOT_PNG_BYTES / (1024 * 1024)
+            ));
+        }
         Ok(SnapshotPayload {
             bytes: png_bytes,
             filename: format!("{slug}.agent.png"),
@@ -261,6 +268,13 @@ pub(crate) async fn materialize_snapshot_bytes(
     } else {
         let json_bytes = encode_snapshot_json(&snapshot)
             .map_err(|e| format!("Failed to encode .agent.json: {e}"))?;
+        if json_bytes.len() > MAX_SNAPSHOT_JSON_BYTES {
+            return Err(format!(
+                "Snapshot exceeds the {} MiB size limit for .agent.json files. \
+                 Reduce memory size or use a config-only snapshot.",
+                MAX_SNAPSHOT_JSON_BYTES / (1024 * 1024)
+            ));
+        }
         Ok(SnapshotPayload {
             bytes: json_bytes,
             filename: format!("{slug}.agent.json"),

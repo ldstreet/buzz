@@ -3,7 +3,7 @@
  *
  * Payload-agnostic upload → send controller for sharing a snapshot to a Buzz
  * channel or DM.  The caller supplies pre-encoded bytes + filename from the
- * Rust layer; this hook drives uploadMediaBytes → sendChannelMessage with
+ * Rust layer; this hook drives uploadMediaBytes → useSendMessageMutation with
  * honest progress and idempotent double-send protection.
  *
  * This hook does not know what kind of snapshot the bytes contain.  A future
@@ -14,18 +14,24 @@
 
 import * as React from "react";
 
-import {
-  uploadMediaBytes,
-  sendChannelMessage,
-  type BlobDescriptor,
-} from "@/shared/api/tauri";
+import { uploadMediaBytes, type BlobDescriptor } from "@/shared/api/tauri";
 import { buildOutgoingMessage } from "@/features/messages/lib/imetaMediaMarkdown";
 import { useChannelsQuery } from "@/features/channels/hooks";
+import { isModerationDm } from "@/features/moderation/lib/moderationDm";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { useSendMessageMutation } from "@/features/messages/hooks";
 import type { Channel } from "@/shared/api/types";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-export type SendPhase = "idle" | "uploading" | "sending" | "done" | "error";
+export type SendPhase =
+  | "idle"
+  | "preparing"
+  | "uploading"
+  | "sending"
+  | "done"
+  | "error";
 
 export type SnapshotSendState = {
   phase: SendPhase;
@@ -33,8 +39,12 @@ export type SnapshotSendState = {
 };
 
 /**
- * A joined, non-archived, sendable destination: channelType "stream" or "dm",
- * isMember true, archivedAt null.  Mirrors the canSendDraft gate exactly.
+ * A joined, non-archived, non-moderation-DM destination: channelType "stream"
+ * or "dm", isMember true, archivedAt null.
+ *
+ * Moderation DM exclusion requires the relay `self` pubkey and the current
+ * user pubkey; those are applied in `useSendableChannels` below so callers
+ * always receive a fully-filtered list.
  */
 export function isSendableDestination(ch: Channel): boolean {
   return ch.isMember && ch.archivedAt === null && ch.channelType !== "forum";
@@ -47,6 +57,11 @@ export type UseSnapshotSendControllerResult = {
   isLoadingChannels: boolean;
   state: SnapshotSendState;
   /**
+   * Directly set the send state. Used by the dialog layer to set the
+   * `preparing` phase before invoking encode, so progress is honest.
+   */
+  setState: React.Dispatch<React.SetStateAction<SnapshotSendState>>;
+  /**
    * Upload `bytes` and send them to `channelId` as a standard NIP-92 imeta
    * attachment message.
    *
@@ -54,6 +69,9 @@ export type UseSnapshotSendControllerResult = {
    * confirmation for memory-bearing payloads before calling this.  Returns
    * false and sets error state if a send is already in progress (double-send
    * guard) or if any step fails.  The method never throws.
+   *
+   * `channelId` is captured at call-time so a channel switch mid-send cannot
+   * redirect the attachment (delegated to `useSendMessageMutation`).
    */
   sendPayload: (
     bytes: number[],
@@ -67,6 +85,17 @@ export type UseSnapshotSendControllerResult = {
 
 export function useSnapshotSendController(): UseSnapshotSendControllerResult {
   const channelsQuery = useChannelsQuery();
+  const identityQuery = useIdentityQuery();
+  // Only fetch relay self when there are DM candidates — same gate as ChannelPane.
+  const hasDmCandidates = React.useMemo(
+    () =>
+      (channelsQuery.data ?? []).some(
+        (ch) => ch.channelType === "dm" && isSendableDestination(ch),
+      ),
+    [channelsQuery.data],
+  );
+  const relaySelfQuery = useRelaySelfQuery(hasDmCandidates);
+
   const [state, setState] = React.useState<SnapshotSendState>({
     phase: "idle",
     error: null,
@@ -75,10 +104,18 @@ export function useSnapshotSendController(): UseSnapshotSendControllerResult {
   // Prevent double-send between renders.
   const inFlightRef = React.useRef(false);
 
-  const sendableChannels = React.useMemo(
-    () => (channelsQuery.data ?? []).filter(isSendableDestination),
-    [channelsQuery.data],
-  );
+  // Pass null channel here — we supply the captured channelId per-send instead.
+  const sendMutation = useSendMessageMutation(null, identityQuery.data);
+
+  const sendableChannels = React.useMemo(() => {
+    const currentPubkey = identityQuery.data?.pubkey;
+    const relaySelf = relaySelfQuery.data;
+    return (channelsQuery.data ?? []).filter(
+      (ch) =>
+        isSendableDestination(ch) &&
+        !isModerationDm(ch, currentPubkey, relaySelf),
+    );
+  }, [channelsQuery.data, identityQuery.data, relaySelfQuery.data]);
 
   async function sendPayload(
     bytes: number[],
@@ -119,11 +156,18 @@ export function useSnapshotSendController(): UseSnapshotSendControllerResult {
         descriptorWithFilename,
       ]);
 
-      // ── Send to the captured destination ──────────────────────────────────
+      // ── Send to the captured destination via canonical mutation ────────────
+      // Capturing channelId here prevents a channel switch from redirecting
+      // the attachment; useSendMessageMutation resolves the live channel from
+      // the query cache using the supplied id.
       setState({ phase: "sending", error: null });
 
       try {
-        await sendChannelMessage(channelId, content, null, mediaTags ?? []);
+        await sendMutation.mutateAsync({
+          channelId,
+          content,
+          mediaTags: mediaTags ?? [],
+        });
       } catch (err) {
         setState({
           phase: "error",
@@ -152,6 +196,7 @@ export function useSnapshotSendController(): UseSnapshotSendControllerResult {
     sendableChannels,
     isLoadingChannels: channelsQuery.isLoading,
     state,
+    setState,
     sendPayload,
     reset,
   };

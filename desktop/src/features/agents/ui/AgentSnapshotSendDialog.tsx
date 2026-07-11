@@ -17,6 +17,8 @@ import {
 } from "@/shared/ui/dialog";
 import { Separator } from "@/shared/ui/separator";
 import { useEncodeAgentSnapshotForSendMutation } from "@/features/agents/hooks";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { resolveChannelDisplayLabel } from "@/features/sidebar/lib/channelLabels";
 import {
   useSnapshotSendController,
   type SendPhase,
@@ -58,6 +60,7 @@ export function AgentSnapshotSendDialog({
 }: AgentSnapshotSendDialogProps) {
   const controller = useSnapshotSendController();
   const encodeMutation = useEncodeAgentSnapshotForSendMutation();
+  const identityQuery = useIdentityQuery();
 
   const [step, setStep] = React.useState<DialogStep>("pick");
   const [selectedChannel, setSelectedChannel] = React.useState<Channel | null>(
@@ -68,6 +71,7 @@ export function AgentSnapshotSendDialog({
   const hasMemory = memoryLevel !== "none";
   const isInProgress =
     encodeMutation.isPending ||
+    controller.state.phase === "preparing" ||
     controller.state.phase === "uploading" ||
     controller.state.phase === "sending";
 
@@ -114,6 +118,9 @@ export function AgentSnapshotSendDialog({
 
   async function handleSend(destination: Channel) {
     setStep("progress");
+    // Set the preparing phase BEFORE encoding so the progress UI is honest
+    // about what phase the dialog is in while memory is fetched and encoded.
+    controller.setState({ phase: "preparing", error: null });
     try {
       const payload = await encodeMutation.mutateAsync({
         id: persona.id,
@@ -148,6 +155,21 @@ export function AgentSnapshotSendDialog({
     onOpenChange(false);
     onSent();
   }
+
+  // Resolved display label for the selected channel — uses the same logic as
+  // the sidebar/header so DMs with generic names ("dm", "direct message") are
+  // shown as participant names everywhere in the dialog.
+  const selectedLabel = React.useMemo(() => {
+    if (!selectedChannel) return null;
+    const label = resolveChannelDisplayLabel(
+      selectedChannel,
+      identityQuery.data?.pubkey,
+      undefined,
+    );
+    return selectedChannel.channelType === "dm"
+      ? `the DM with ${label}`
+      : `#${label}`;
+  }, [selectedChannel, identityQuery.data]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -254,13 +276,15 @@ export function AgentSnapshotSendDialog({
           />
         ) : step === "memgate" && selectedChannel !== null ? (
           <MemoryGateStep
-            destination={selectedChannel}
+            destinationLabel={selectedLabel ?? `#${selectedChannel.name}`}
             memoryLevel={memoryLevel}
           />
         ) : step === "progress" ? (
           <ProgressStep phase={controller.state.phase} />
         ) : step === "done" && selectedChannel !== null ? (
-          <DoneStep destination={selectedChannel} />
+          <DoneStep
+            destinationLabel={selectedLabel ?? `#${selectedChannel.name}`}
+          />
         ) : (
           <ErrorStep
             error={
@@ -302,8 +326,8 @@ function PickStep({
         <span className="font-medium text-foreground">
           {persona.displayName}
         </span>{" "}
-        as a snapshot to a channel or DM. The recipient can import it directly
-        from the message.
+        as a snapshot attachment to a channel or DM. Recipients receive the
+        snapshot file and can import it locally.
       </p>
 
       {/* Search */}
@@ -363,17 +387,13 @@ function PickStep({
 // ── Memory gate step ──────────────────────────────────────────────────────────
 
 export function MemoryGateStep({
-  destination,
+  destinationLabel,
   memoryLevel,
 }: {
-  destination: Channel;
+  destinationLabel: string;
   memoryLevel: SnapshotMemoryLevel;
 }) {
   const scope = memoryLevel === "core" ? "core memory" : "all memory";
-  const destLabel =
-    destination.channelType === "dm"
-      ? `the DM with ${destination.name}`
-      : `#${destination.name}`;
 
   return (
     <div className="space-y-4 py-1">
@@ -388,15 +408,18 @@ export function MemoryGateStep({
           </p>
           <ul className="list-disc space-y-1 pl-4 text-xs">
             <li>
-              The memory will be delivered to <strong>{destLabel}</strong> and
-              visible to everyone in that recipient surface.
+              The memory will be delivered to{" "}
+              <strong>{destinationLabel}</strong> and visible to everyone in
+              that recipient surface.
             </li>
             <li>
               Anyone who obtains the uploaded media link will also be able to
               fetch the raw snapshot bytes.
             </li>
           </ul>
-          <p>Only continue if you trust everyone who can see {destLabel}.</p>
+          <p>
+            Only continue if you trust everyone who can see {destinationLabel}.
+          </p>
         </div>
       </div>
     </div>
@@ -407,7 +430,11 @@ export function MemoryGateStep({
 
 function ProgressStep({ phase }: { phase: SendPhase }) {
   const label =
-    phase === "uploading" ? "Uploading snapshot…" : "Sending message…";
+    phase === "preparing"
+      ? "Preparing snapshot…"
+      : phase === "uploading"
+        ? "Uploading snapshot…"
+        : "Sending message…";
   return (
     <div
       className="py-6 text-center text-sm text-muted-foreground"
@@ -420,20 +447,15 @@ function ProgressStep({ phase }: { phase: SendPhase }) {
 
 // ── Done step ─────────────────────────────────────────────────────────────────
 
-function DoneStep({ destination }: { destination: Channel }) {
-  const destLabel =
-    destination.channelType === "dm"
-      ? `the DM with ${destination.name}`
-      : `#${destination.name}`;
-
+function DoneStep({ destinationLabel }: { destinationLabel: string }) {
   return (
     <div
       className="space-y-2 py-2 text-sm"
       data-testid="agent-snapshot-send-done"
     >
       <p>
-        Snapshot sent to <span className="font-medium">{destLabel}</span>.
-        Recipients can click the attachment to import the agent.
+        Snapshot sent to <span className="font-medium">{destinationLabel}</span>
+        . Recipients can download and import the snapshot file.
       </p>
     </div>
   );
