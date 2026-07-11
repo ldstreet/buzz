@@ -638,11 +638,13 @@ export function useExportAgentSnapshotMutation() {
       id,
       memoryLevel,
       format,
+      memorySourcePubkey,
     }: {
       id: string;
       memoryLevel: SnapshotMemoryLevel;
       format: SnapshotFormat;
-    }) => exportAgentSnapshot(id, memoryLevel, format),
+      memorySourcePubkey?: string | null;
+    }) => exportAgentSnapshot(id, memoryLevel, format, memorySourcePubkey),
   });
 }
 
