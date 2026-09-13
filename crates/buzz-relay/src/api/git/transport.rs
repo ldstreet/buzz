@@ -184,12 +184,41 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
 
         // body=None: can't buffer streaming pack data to verify payload hash.
         // Token is time-bounded (±60s) and URL-locked — acceptable trade-off.
-        let pubkey =
-            buzz_auth::nip98::verify_nip98_event(&event_json, &expected_url, &event_method, None)
-                .map_err(|e| {
-                warn!(error = %e, "git NIP-98 auth failed");
-                (StatusCode::UNAUTHORIZED, "NIP-98 auth failed").into_response()
-            })?;
+        // Candidate expected URLs: one per client-reachable scheme (config
+        // listener plus the BUZZ_CLIENT_RELAY_URL proxy origin), mirroring
+        // bridge::nip98_expected_urls. The git builder's repo-path slicing
+        // applies per scheme.
+        let path_and_query_ref = parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or(parts.uri.path());
+        let candidates: Vec<String> = crate::api::bridge::client_relay_schemes(&state.config.relay_url)
+            .into_iter()
+            .filter_map(|scheme| {
+                let repo_path = if let Some((prefix, _q)) = path_and_query_ref.split_once("/info/refs") {
+                    prefix.to_string()
+                } else if let Some(prefix) = path_and_query_ref.strip_suffix("/git-upload-pack") {
+                    prefix.to_string()
+                } else {
+                    path_and_query_ref.strip_suffix("/git-receive-pack")?.to_string()
+                };
+                Some(format!("{scheme}://{}{repo_path}", tenant.host()))
+            })
+            .collect();
+        let mut pubkey = None;
+        for candidate in &candidates {
+            if let Ok(pk) =
+                buzz_auth::nip98::verify_nip98_event(&event_json, candidate, &event_method, None)
+            {
+                pubkey = Some(pk);
+                break;
+            }
+        }
+        let pubkey = pubkey.ok_or_else(|| {
+            warn!("git NIP-98 auth failed");
+            (StatusCode::UNAUTHORIZED, "NIP-98 auth failed").into_response()
+        })?;
 
         // NOTE: NIP-98 event-ID dedup intentionally NOT implemented here.
         // Git's credential protocol reuses one signed token across multiple requests

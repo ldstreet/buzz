@@ -74,7 +74,7 @@ async fn authorize_operator_request(
         Some(q) if !q.is_empty() => format!("{path}?{q}"),
         _ => path.to_string(),
     };
-    let url = format!("{origin}{path_with_query}");
+    let urls = vec![format!("{origin}{path_with_query}")];
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
@@ -82,7 +82,7 @@ async fn authorize_operator_request(
     } = bridge::verify_bridge_auth_with_options(
         headers,
         method,
-        &url,
+        &urls,
         body,
         true, // operator endpoints always require NIP-98; no X-Pubkey dev fallback
         body.is_some(),

@@ -135,16 +135,27 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
     let auth_tag_json = extract_auth_tag_json(&event);
     let signed_auth_created_at = event.created_at.as_secs();
 
-    let relay_url =
-        crate::api::bridge::nip42_expected_relay_url(&state.config.relay_url, &conn.tenant);
+    let relay_urls =
+        crate::api::bridge::nip42_expected_relay_urls(&state.config.relay_url, &conn.tenant);
     let auth_svc = Arc::clone(&state.auth);
 
-    // Pure NIP-42 verification — crypto only, no DB lookups.
-    match auth_svc
-        .verify_auth_event(event, &challenge, &relay_url)
-        .await
-    {
-        Ok(mut auth_ctx) => {
+    // Pure NIP-42 verification — crypto only, no DB lookups. The signed relay
+    // tag must match one of the client-reachable origins for this tenant.
+    let mut verified = None;
+    for relay_url in &relay_urls {
+        match auth_svc
+            .verify_auth_event(event.clone(), &challenge, relay_url)
+            .await
+        {
+            Ok(ctx) => {
+                verified = Some(ctx);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    match verified {
+        Some(mut auth_ctx) => {
             let pubkey = auth_ctx.pubkey;
 
             // Community ban gate (NIP-42 seam). Runs immediately after auth
@@ -360,8 +371,8 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
                 .set_authenticated_pubkey(conn_id, pubkey.to_bytes().to_vec());
             conn.send(RelayMessage::ok(&event_id_hex, true, ""));
         }
-        Err(e) => {
-            warn!(conn_id = %conn_id, error = %e, "NIP-42 auth failed");
+        None => {
+            warn!(conn_id = %conn_id, "NIP-42 auth failed");
             metrics::counter!("buzz_auth_failures_total", "reason" => "nip42_invalid").increment(1);
             if !conn.reject_auth(AuthOutcome::Invalid) {
                 return;

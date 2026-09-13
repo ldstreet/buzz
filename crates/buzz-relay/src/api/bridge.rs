@@ -77,13 +77,20 @@ pub(crate) fn verify_bridge_auth(
     body: Option<&[u8]>,
     require_auth_token: bool,
 ) -> BridgeAuthResult {
-    verify_bridge_auth_with_options(headers, method, url, body, require_auth_token, false)
+    verify_bridge_auth_with_options(
+        headers,
+        method,
+        std::slice::from_ref(&url.to_string()),
+        body,
+        require_auth_token,
+        false,
+    )
 }
 
 pub(crate) fn verify_bridge_auth_with_options(
     headers: &HeaderMap,
     method: &str,
-    url: &str,
+    urls: &[String],
     body: Option<&[u8]>,
     require_auth_token: bool,
     require_payload: bool,
@@ -119,14 +126,22 @@ pub(crate) fn verify_bridge_auth_with_options(
             ));
         }
 
-        let pubkey = buzz_auth::verify_nip98_event(&event_json, url, method, body)
-            .map_err(|e| api_error(StatusCode::UNAUTHORIZED, &format!("NIP-98: {e}")))?;
-
-        return Ok(VerifiedBridgeAuth {
-            pubkey,
-            event_id_bytes,
-            signed_created_at: Some(event.created_at.as_secs()),
-        });
+        let mut last_err = None;
+        for candidate in urls {
+            match buzz_auth::verify_nip98_event(&event_json, candidate, method, body) {
+                Ok(pubkey) => return Ok(VerifiedBridgeAuth {
+                    pubkey,
+                    event_id_bytes,
+                    signed_created_at: Some(event.created_at.as_secs()),
+                }),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let e = last_err.expect("at least one candidate URL");
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            &format!("NIP-98: {e}"),
+        ));
     }
 
     // Dev-mode fallback: X-Pubkey header (only when require_auth_token is false)
@@ -224,6 +239,54 @@ pub(crate) fn nip98_expected_url(
     format!("{scheme}://{}{path}", tenant.host())
 }
 
+/// Schemes a client may have dialed for this deployment.
+///
+/// The relay listener's own scheme comes from `config_relay_url`. When the
+/// deployment sits behind a TLS-terminating fronting proxy, clients dial and
+/// sign the proxy's origin instead; declare it via `BUZZ_CLIENT_RELAY_URL`
+/// (`wss://host[:port]`) and its scheme joins the accepted set. Without the
+/// env var this is always the single config scheme.
+pub(crate) fn client_relay_schemes(config_relay_url: &str) -> Vec<&'static str> {
+    let mut schemes = vec![
+        if config_relay_url.trim_start().starts_with("wss://") {
+            "https"
+        } else {
+            "http"
+        },
+    ];
+    if let Ok(raw) = std::env::var("BUZZ_CLIENT_RELAY_URL") {
+        let raw = raw.trim();
+        let extra = if raw.starts_with("wss://") {
+            Some("https")
+        } else if raw.starts_with("ws://") {
+            Some("http")
+        } else {
+            None
+        };
+        if let Some(extra) = extra {
+            if !schemes.contains(&extra) {
+                schemes.push(extra);
+            }
+        }
+    }
+    schemes
+}
+
+/// Multi-candidate sibling of [`nip98_expected_url`]: one expected URL per
+/// client-reachable scheme (config listener plus `BUZZ_CLIENT_RELAY_URL`
+/// proxy origin), all over the request's tenant host. A signature matching
+/// any candidate is accepted.
+pub(crate) fn nip98_expected_urls(
+    config_relay_url: &str,
+    tenant: &TenantContext,
+    path: &str,
+) -> Vec<String> {
+    client_relay_schemes(config_relay_url)
+        .into_iter()
+        .map(|scheme| format!("{scheme}://{}{path}", tenant.host()))
+        .collect()
+}
+
 /// Construct the NIP-42 expected `relay` URL for a connection bound to `tenant`.
 ///
 /// NIP-42 (WebSocket AUTH) sibling of [`nip98_expected_url`]. Conformance row 44
@@ -248,6 +311,19 @@ pub(crate) fn nip42_expected_relay_url(config_relay_url: &str, tenant: &TenantCo
         "ws"
     };
     format!("{scheme}://{}", tenant.host())
+}
+
+/// Multi-candidate sibling of [`nip42_expected_relay_url`]: same tenant host
+/// under every client-reachable scheme (see [`client_relay_schemes`]).
+pub(crate) fn nip42_expected_relay_urls(
+    config_relay_url: &str,
+    tenant: &TenantContext,
+) -> Vec<String> {
+    let ws_scheme = |https: &str| if https == "https" { "wss" } else { "ws" };
+    client_relay_schemes(config_relay_url)
+        .into_iter()
+        .map(|scheme| format!("{}://{}", ws_scheme(scheme), tenant.host()))
+        .collect()
 }
 
 /// Extract a channel UUID from a single filter's `#h` tag.
@@ -741,17 +817,18 @@ pub async fn submit_event(
             )
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/events");
+    let urls = nip98_expected_urls(&state.config.relay_url, &tenant, "/events");
     let VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         signed_created_at,
-    } = verify_bridge_auth(
+    } = verify_bridge_auth_with_options(
         &headers,
         "POST",
-        &url,
+        &urls,
         Some(&body),
         state.config.require_auth_token,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -1030,17 +1107,18 @@ pub async fn query_events(
             )
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/query");
+    let urls = nip98_expected_urls(&state.config.relay_url, &tenant, "/query");
     let VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         signed_created_at,
-    } = verify_bridge_auth(
+    } = verify_bridge_auth_with_options(
         &headers,
         "POST",
-        &url,
+        &urls,
         Some(&body),
         state.config.require_auth_token,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -1573,17 +1651,18 @@ pub async fn count_events(
             )
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/count");
+    let urls = nip98_expected_urls(&state.config.relay_url, &tenant, "/count");
     let VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         signed_created_at,
-    } = verify_bridge_auth(
+    } = verify_bridge_auth_with_options(
         &headers,
         "POST",
-        &url,
+        &urls,
         Some(&body),
         state.config.require_auth_token,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -2373,12 +2452,12 @@ async fn authorize_moderation_read(
         Some(q) if !q.is_empty() => format!("{path}?{q}"),
         _ => path.to_string(),
     };
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
+    let urls = nip98_expected_urls(&state.config.relay_url, &tenant, &path_with_query);
     let VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         ..
-    } = verify_bridge_auth(headers, "GET", &url, None, state.config.require_auth_token)?;
+    } = verify_bridge_auth_with_options(headers, "GET", &urls, None, state.config.require_auth_token, false)?;
     check_nip98_replay(state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
@@ -2964,7 +3043,7 @@ mod postgres_tests {
         let (status, body) = verify_bridge_auth_with_options(
             &headers,
             "POST",
-            signed_url,
+            std::slice::from_ref(&signed_url.to_string()),
             Some(br#"{"host":"created.example"}"#),
             true,
             true,
