@@ -209,12 +209,12 @@ async fn authorize_operator_request(
         Some(q) if !q.is_empty() => format!("{path}?{q}"),
         _ => path.to_string(),
     };
-    let url = format!("{origin}{path_with_query}");
+    let urls = vec![format!("{origin}{path_with_query}")];
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         ..
-    } = bridge::verify_nip98_exempt_operator(headers, method, &url, body)?;
+    } = bridge::verify_nip98_exempt_operator(headers, method, &urls, body)?;
     check_operator_replay(state, event_id_bytes).await?;
 
     let pubkey_hex = pubkey.to_hex();
@@ -248,11 +248,12 @@ async fn authorize_operator_listener_request(
         .as_deref()
         .ok_or_else(|| internal_error("operator API origin is not configured"))?;
     let url = format!("{origin}{path}");
+    let urls = vec![url.clone()];
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         ..
-    } = bridge::verify_nip98_exempt_operator(headers, method, &url, Some(body))?;
+    } = bridge::verify_nip98_exempt_operator(headers, method, &urls, Some(body))?;
     check_operator_replay(state, event_id_bytes).await?;
     if !state
         .config

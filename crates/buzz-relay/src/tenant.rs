@@ -86,7 +86,25 @@ pub async fn bind_community<R: HostResolver>(
     }
     match resolver.resolve_host(&host).await {
         Ok(Some(community)) => Ok(TenantContext::resolved(community, host)),
-        Ok(None) => Err(BindError::UnmappedHost),
+        Ok(None) => {
+            // Proxy-origin fallback: when the deployment sits behind a TLS-
+            // terminating proxy, clients arrive with the proxy's Host, which
+            // has no `communities` row. With `BUZZ_FALLBACK_COMMUNITY_HOST`
+            // set, bind to the community that host resolves to while keeping
+            // the request's own host as the tenant host (signature checks use
+            // it). Opt-in because it collapses host separation: only safe for
+            // single-community deployments behind a trusted proxy.
+            if let Ok(fallback) = std::env::var("BUZZ_FALLBACK_COMMUNITY_HOST") {
+                let fallback = fallback.trim();
+                if !fallback.is_empty() {
+                    let fallback_host = normalize_host(fallback);
+                    if let Ok(Some(community)) = resolver.resolve_host(&fallback_host).await {
+                        return Ok(TenantContext::resolved(community, host));
+                    }
+                }
+            }
+            Err(BindError::UnmappedHost)
+        }
         Err(e) => Err(BindError::Lookup(e)),
     }
 }

@@ -173,7 +173,7 @@ async fn authenticate(
     let tenant = crate::nip_fi_shadow::bind_tenant(state, headers)
         .await
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "repository not found"))?;
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let urls = bridge::nip98_expected_urls(&state.config.relay_url, &tenant, path);
     let method = if body.is_some() { "POST" } else { "GET" };
     let require_payload = body.is_some();
 
@@ -191,7 +191,7 @@ async fn authenticate(
         bridge::make_nip98_closure_for_admission(
             headers.clone(),
             method,
-            url,
+            urls,
             body.map(|b| b.to_vec()),
             true, // require_auth_token: always required for control-plane
             require_payload,

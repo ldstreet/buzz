@@ -122,7 +122,7 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
         let tenant = crate::nip_fi_shadow::bind_tenant(state, &parts.headers)
             .await
             .ok_or_else(|| (StatusCode::NOT_FOUND, "repository not found").into_response())?;
-        let expected_url = git_expected_url(
+        let _expected_url = git_expected_url(
             &state.config.relay_url,
             &tenant,
             parts
@@ -155,6 +155,16 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
         // Token is time-bounded (±60s) and URL-locked — acceptable trade-off.
         let headers_clone = parts.headers.clone();
         let method_str = method.to_owned();
+        // Candidate expected URLs: one per client-reachable scheme (config
+        // listener plus the BUZZ_CLIENT_RELAY_URL proxy origin), mirroring
+        // bridge::nip98_expected_urls. The git builder's repo-path slicing
+        // applies per scheme.
+        let path_and_query_ref = parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or(parts.uri.path());
+        let tenant_for_urls = tenant.clone();
         let admission = crate::nip_fi_http::admit_nip_fi_http_on_state(
             state,
             &parts.headers,
@@ -167,17 +177,33 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
                     parse_git_auth_header_full(&headers_clone, &method_str)?;
 
                 // SECURITY: method intentionally not verified for git routes. The tautological
-                // check (event.method == event.method) is deliberate — see comment block above.
+                // check (event.method == event.method) is deliberate - see comment block above.
                 // Git's credential protocol signs once with GET and reuses for POST. The URL tag
-                // provides the real security boundary (±60s timestamp + URL lock + HTTPS).
-                let pubkey = buzz_auth::nip98::verify_nip98_event(
-                    &event_json,
-                    &expected_url,
-                    &method_for_verify,
-                    None,
-                )
-                .map_err(|e| {
-                    warn!(error = %e, "git NIP-98 auth failed");
+                // provides the real security boundary (+/-60s timestamp + URL lock + HTTPS).
+                let candidates: Vec<String> = crate::api::bridge::client_relay_schemes(&state.config.relay_url)
+                    .into_iter()
+                    .filter_map(|scheme| {
+                        let repo_path = if let Some((prefix, _q)) = path_and_query_ref.split_once("/info/refs") {
+                            prefix.to_string()
+                        } else if let Some(prefix) = path_and_query_ref.strip_suffix("/git-upload-pack") {
+                            prefix.to_string()
+                        } else {
+                            path_and_query_ref.strip_suffix("/git-receive-pack")?.to_string()
+                        };
+                        Some(format!("{scheme}://{}{repo_path}", tenant_for_urls.host()))
+                    })
+                    .collect();
+                let mut pubkey = None;
+                for candidate in &candidates {
+                    if let Ok(pk) =
+                        buzz_auth::nip98::verify_nip98_event(&event_json, candidate, &method_for_verify, None)
+                    {
+                        pubkey = Some(pk);
+                        break;
+                    }
+                }
+                let pubkey = pubkey.ok_or_else(|| {
+                    warn!("git NIP-98 auth failed");
                     (StatusCode::UNAUTHORIZED, "NIP-98 auth failed").into_response()
                 })?;
 

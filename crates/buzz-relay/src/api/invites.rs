@@ -247,12 +247,12 @@ async fn authenticate(
             )
         })?;
 
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let urls = bridge::nip98_expected_urls(&state.config.relay_url, &tenant, path);
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
         ..
-    } = bridge::verify_nip98_exempt_invite_claim(headers, "POST", &url, Some(body))?;
+    } = bridge::verify_nip98_exempt_invite_claim(headers, "POST", &urls, Some(body))?;
     bridge::check_nip98_replay(state, &tenant, event_id_bytes).await?;
 
     Ok((tenant, pubkey))
@@ -301,7 +301,7 @@ async fn mint_invite_checked(
         .into_response();
     };
 
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, "/api/invites");
+    let url = bridge::nip98_expected_urls(&state.config.relay_url, &tenant, "/api/invites");
 
     // NIP-FI admission: NIP-98 extraction runs inside the closure, followed by
     // assertion verify → pair → deny-map in fixed order. The proven pubkey is
@@ -327,7 +327,6 @@ async fn mint_invite_checked(
     let token_owner = admission.token_owner();
     let (event_id_bytes, signed_created_at) = admission.into_extra();
 
-    // Replay detection runs after NIP-98+assertion admission (both proofs verified).
     if let Err(e) = bridge::check_nip98_replay(&state, &tenant, event_id_bytes).await {
         return e.into_response();
     }
