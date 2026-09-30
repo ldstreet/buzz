@@ -575,10 +575,20 @@ async fn upload_blob_result(
         // get the same NIP-FI shape as pre-body ones.
         .map_err(|e| media_denial(e, strictness))?;
 
+    // When the relay sits behind a TLS-terminating proxy (e.g. Caddy on a
+    // Tailscale endpoint), the client-facing origin is https even though the
+    // relay itself runs plain ws/http internally. Trust the proxy's
+    // X-Forwarded-Proto so media descriptor URLs are fetchable by clients
+    // whose relay origin is the proxy (ATS on iOS rejects plain http).
+    let forwarded_proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     rewrite_descriptor_urls_for_tenant(
         &mut descriptor,
         &state.config.relay_url,
         auth.tenant.host(),
+        forwarded_proto.as_deref(),
     );
 
     // Normalize MIME to a known set to bound label cardinality.
@@ -621,13 +631,24 @@ async fn upload_blob_result(
     Ok(Json(descriptor))
 }
 
-pub(crate) fn media_base_url_for_tenant(config_relay_url: &str, tenant_host: &str) -> String {
-    let scheme = if config_relay_url.trim_start().starts_with("wss://")
-        || config_relay_url.trim_start().starts_with("https://")
-    {
-        "https"
-    } else {
-        "http"
+pub(crate) fn media_base_url_for_tenant(
+    config_relay_url: &str,
+    tenant_host: &str,
+    forwarded_proto: Option<&str>,
+) -> String {
+    let scheme = match forwarded_proto {
+        // Only trust proxy-declared http/https; anything else falls through to
+        // the configured relay URL's scheme.
+        Some(proto @ ("http" | "https")) => proto.to_owned(),
+        _ => {
+            if config_relay_url.trim_start().starts_with("wss://")
+                || config_relay_url.trim_start().starts_with("https://")
+            {
+                "https".to_owned()
+            } else {
+                "http".to_owned()
+            }
+        }
     };
     format!("{scheme}://{tenant_host}/media")
 }
@@ -636,8 +657,9 @@ fn rewrite_descriptor_urls_for_tenant(
     descriptor: &mut BlobDescriptor,
     config_relay_url: &str,
     tenant_host: &str,
+    forwarded_proto: Option<&str>,
 ) {
-    let base = media_base_url_for_tenant(config_relay_url, tenant_host);
+    let base = media_base_url_for_tenant(config_relay_url, tenant_host, forwarded_proto);
     let ext = descriptor
         .url
         .rsplit_once('.')
@@ -2012,12 +2034,17 @@ mod tests {
     #[test]
     fn media_base_url_for_tenant_uses_tenant_host_and_http_scheme() {
         assert_eq!(
-            media_base_url_for_tenant("wss://config.example", "tenant-b.example"),
+            media_base_url_for_tenant("wss://config.example", "tenant-b.example", None),
             "https://tenant-b.example/media"
         );
         assert_eq!(
-            media_base_url_for_tenant("ws://config.example", "localhost:3100"),
+            media_base_url_for_tenant("ws://config.example", "localhost:3100", None),
             "http://localhost:3100/media"
+        );
+        // Proxy-declared proto wins (TLS-terminating reverse proxy).
+        assert_eq!(
+            media_base_url_for_tenant("ws://config.example", "tenant-b.example", Some("https")),
+            "https://tenant-b.example/media"
         );
     }
 
@@ -2040,6 +2067,7 @@ mod tests {
             &mut descriptor,
             "wss://primary.example",
             "tenant-b.example",
+            None,
         );
 
         assert_eq!(

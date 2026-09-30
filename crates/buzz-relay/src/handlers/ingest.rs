@@ -3364,7 +3364,11 @@ async fn ingest_event_inner(
     }
 
     let tenant_media_base =
-        crate::api::media::media_base_url_for_tenant(&state.config.relay_url, tenant.host());
+        crate::api::media::media_base_url_for_tenant(
+                &state.config.relay_url,
+                tenant.host(),
+                None,
+            );
     if kind_u32 == KIND_STREAM_MESSAGE {
         validate_link_preview_tags(&event, &tenant_media_base)
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;

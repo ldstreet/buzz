@@ -430,8 +430,16 @@ fn is_local_media_url(url: &str, media_base_url: &str) -> bool {
         rest
     } else {
         let base = media_base_url.trim_end_matches('/');
-        let prefix = format!("{}/", base);
-        if let Some(rest) = url.strip_prefix(&prefix) {
+        // Scheme-insensitive comparison: the same tenant origin may be
+        // reached as http (direct LAN) or https (TLS-terminating proxy), and
+        // descriptor URLs are emitted with the client-facing scheme.
+        fn scheme_agnostic(s: &str) -> &str {
+            s.strip_prefix("https://")
+                .or_else(|| s.strip_prefix("http://"))
+                .unwrap_or(s)
+        }
+        let prefix = format!("{}/", scheme_agnostic(base));
+        if let Some(rest) = scheme_agnostic(url).strip_prefix(&prefix) {
             rest
         } else {
             return false;
