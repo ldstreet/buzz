@@ -421,13 +421,6 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
 
     let relay_urls =
         crate::api::bridge::nip42_expected_relay_urls(&state.config.relay_url, &conn.tenant);
-    tracing::info!(
-        config_relay_url = %state.config.relay_url,
-        tenant_host = %conn.tenant.host(),
-        relay_urls = ?relay_urls,
-        buzz_client_relay_url = ?std::env::var("BUZZ_CLIENT_RELAY_URL").ok(),
-        "NIP-42 auth: expected relay URLs"
-    );
     let auth_svc = Arc::clone(&state.auth);
 
     let _shadow_attempt =

@@ -184,7 +184,6 @@ pub(crate) async fn bind_tenant(
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    tracing::info!(raw_host = %raw_host, "NIP-42 auth: bind_tenant raw Host header");
     let tenant = crate::tenant::bind_community(&state.db, raw_host)
         .await
         .ok();
