@@ -36,7 +36,20 @@ Future<WebSocket> openRelayWebSocket(
 /// WebSocket.connect uses only openUrl on its supplied HTTP client. Keep this
 /// adapter limited to upgrades instead of exposing a second general transport.
 class _UpgradeClient implements HttpClient {
-  final _inner = HttpClient();
+  _UpgradeClient() : _inner = _buildInnerClient();
+
+  static HttpClient _buildInnerClient() {
+    final context = SecurityContext();
+    // In dev mode, the relay may be fronted by Caddy with a self-signed
+    // internal CA. Trust it so wss connections succeed without sudo.
+    final rootCertPath =
+        '/Users/ldstreet/Library/Application Support/Caddy/pki/authorities/local/root.crt';
+    if (File(rootCertPath).existsSync()) {
+      context.setTrustedCertificates(rootCertPath);
+    }
+    return HttpClient(context: context);
+  }
+  final HttpClient _inner;
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {

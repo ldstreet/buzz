@@ -35,7 +35,7 @@ Future<List<AddCommunityDeepLink>> loadHostedCommunities(
         relay.hasQuery ||
         relay.hasFragment ||
         (relay.path.isNotEmpty && relay.path != '/') ||
-        (relay.hasPort && relay.port != 443)) {
+        (relay.hasPort && relay.port != 443 && relay.port != 8443)) {
       throw AccountFailure.invalidResponse;
     }
     // A hosted listing can contain communities this build cannot enter.
