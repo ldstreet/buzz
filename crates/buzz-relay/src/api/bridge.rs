@@ -465,10 +465,23 @@ pub(crate) fn nip98_expected_urls(
     tenant: &TenantContext,
     path: &str,
 ) -> Vec<String> {
-    client_relay_schemes(config_relay_url)
+    let mut urls: Vec<String> = client_relay_schemes(config_relay_url)
         .into_iter()
         .map(|scheme| format!("{scheme}://{}{path}", tenant.host()))
-        .collect()
+        .collect();
+    // Also accept the raw BUZZ_CLIENT_RELAY_URL as a candidate — the client
+    // signs with whatever URL it connected to, which may differ from
+    // tenant.host() when behind a TLS-terminating proxy.
+    if let Ok(raw) = std::env::var("BUZZ_CLIENT_RELAY_URL") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            let candidate = format!("{raw}{path}");
+            if !urls.iter().any(|u| u == &candidate) {
+                urls.push(candidate);
+            }
+        }
+    }
+    urls
 }
 
 /// Construct the NIP-42 expected `relay` URL for a connection bound to `tenant`.
