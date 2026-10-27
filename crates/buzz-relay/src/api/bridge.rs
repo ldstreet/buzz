@@ -504,10 +504,20 @@ pub(crate) fn nip42_expected_relay_urls(
     tenant: &TenantContext,
 ) -> Vec<String> {
     let ws_scheme = |https: &str| if https == "https" { "wss" } else { "ws" };
-    client_relay_schemes(config_relay_url)
+    let mut urls: Vec<String> = client_relay_schemes(config_relay_url)
         .into_iter()
         .map(|scheme| format!("{}://{}", ws_scheme(scheme), tenant.host()))
-        .collect()
+        .collect();
+    // Also accept the raw BUZZ_CLIENT_RELAY_URL as a candidate — the client
+    // signs with whatever URL it connected to, which may differ from
+    // tenant.host() when behind a TLS-terminating proxy.
+    if let Ok(raw) = std::env::var("BUZZ_CLIENT_RELAY_URL") {
+        let raw = raw.trim();
+        if !raw.is_empty() && !urls.iter().any(|u| u == raw) {
+            urls.push(raw.to_string());
+        }
+    }
+    urls
 }
 
 /// Extract a channel UUID from a single filter's `#h` tag.
