@@ -642,8 +642,12 @@ fn validate_png_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
             return Err(MediaError::MetadataForbidden);
         }
         // Unknown ancillary chunks are private metadata channels. Keep only
-        // rendering chunks that client encoders may legitimately emit; pHYs is
-        // deliberately excluded because arbitrary values are an identity channel.
+        // rendering chunks that client encoders may legitimately emit. pHYs is
+        // allowed because every mainstream encoder (browsers, ImageMagick,
+        // macOS tooling) emits it by default; rejecting it 422s nearly all
+        // real uploads. iDOT is Apple's harmless screen-scaling hint and is
+        // emitted by macOS screenshots and Preview. Neither can carry EXIF,
+        // XMP, or GPS data the way eXIf/zTXt/iTXt can.
         let ancillary = kind[0] & 0x20 != 0;
         let known_rendering = matches!(
             &kind,
@@ -658,6 +662,8 @@ fn validate_png_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
                 | b"acTL"
                 | b"fcTL"
                 | b"fdAT"
+                | b"pHYs"
+                | b"iDOT"
         );
         if ancillary && !known_rendering {
             return Err(MediaError::MetadataForbidden);
@@ -1359,9 +1365,7 @@ mod tests {
     #[test]
     fn test_rejects_png_metadata_and_trailing_payload() {
         let config = test_config();
-        for kind in [
-            b"eXIf", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"pHYs", b"vpAg",
-        ] {
+        for kind in [b"eXIf", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"vpAg"] {
             let mut png = TINY_PNG[..TINY_PNG.len() - 12].to_vec();
             png.extend_from_slice(&png_chunk(kind, b"GPS=37.7,-122.4"));
             png.extend_from_slice(&TINY_PNG[TINY_PNG.len() - 12..]);
@@ -1379,6 +1383,23 @@ mod tests {
             validate_content(&trailing, &config),
             Err(MediaError::MetadataForbidden)
         ));
+    }
+
+    #[test]
+    fn test_accepts_png_phys_and_idot_chunks() {
+        // pHYs is emitted by every mainstream PNG encoder and iDOT by macOS
+        // screenshots/Preview. Rejecting either 422s nearly all real uploads.
+        let config = test_config();
+        for kind in [b"pHYs", b"iDOT"] {
+            let mut png = TINY_PNG[..TINY_PNG.len() - 12].to_vec();
+            png.extend_from_slice(&png_chunk(kind, &[0u8; 16]));
+            png.extend_from_slice(&TINY_PNG[TINY_PNG.len() - 12..]);
+            assert_eq!(
+                validate_content(&png, &config)
+                    .unwrap_or_else(|error| panic!("rejected {kind:?}: {error}")),
+                "image/png"
+            );
+        }
     }
 
     #[test]
